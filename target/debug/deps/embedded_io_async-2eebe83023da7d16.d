@@ -1,9 +1,0 @@
-/home/dbydd/gitProjects/arceos_starry_shared_crates/axusb_host/target/debug/deps/libembedded_io_async-2eebe83023da7d16.rmeta: /home/dbydd/.cargo/registry/src/index.crates.io-6f17d22bba15001f/embedded-io-async-0.6.1/src/lib.rs /home/dbydd/.cargo/registry/src/index.crates.io-6f17d22bba15001f/embedded-io-async-0.6.1/src/impls/mod.rs /home/dbydd/.cargo/registry/src/index.crates.io-6f17d22bba15001f/embedded-io-async-0.6.1/src/impls/slice_mut.rs /home/dbydd/.cargo/registry/src/index.crates.io-6f17d22bba15001f/embedded-io-async-0.6.1/src/impls/slice_ref.rs /home/dbydd/.cargo/registry/src/index.crates.io-6f17d22bba15001f/embedded-io-async-0.6.1/src/../README.md
-
-/home/dbydd/gitProjects/arceos_starry_shared_crates/axusb_host/target/debug/deps/embedded_io_async-2eebe83023da7d16.d: /home/dbydd/.cargo/registry/src/index.crates.io-6f17d22bba15001f/embedded-io-async-0.6.1/src/lib.rs /home/dbydd/.cargo/registry/src/index.crates.io-6f17d22bba15001f/embedded-io-async-0.6.1/src/impls/mod.rs /home/dbydd/.cargo/registry/src/index.crates.io-6f17d22bba15001f/embedded-io-async-0.6.1/src/impls/slice_mut.rs /home/dbydd/.cargo/registry/src/index.crates.io-6f17d22bba15001f/embedded-io-async-0.6.1/src/impls/slice_ref.rs /home/dbydd/.cargo/registry/src/index.crates.io-6f17d22bba15001f/embedded-io-async-0.6.1/src/../README.md
-
-/home/dbydd/.cargo/registry/src/index.crates.io-6f17d22bba15001f/embedded-io-async-0.6.1/src/lib.rs:
-/home/dbydd/.cargo/registry/src/index.crates.io-6f17d22bba15001f/embedded-io-async-0.6.1/src/impls/mod.rs:
-/home/dbydd/.cargo/registry/src/index.crates.io-6f17d22bba15001f/embedded-io-async-0.6.1/src/impls/slice_mut.rs:
-/home/dbydd/.cargo/registry/src/index.crates.io-6f17d22bba15001f/embedded-io-async-0.6.1/src/impls/slice_ref.rs:
-/home/dbydd/.cargo/registry/src/index.crates.io-6f17d22bba15001f/embedded-io-async-0.6.1/src/../README.md:

@@ -39,6 +39,7 @@ dependencies = [
  "num-derive 0.4.2",
  "num-traits",
  "tock-registers",
+ "usb-descriptor-decoder",
  "xhci",
 ]
 
@@ -263,9 +264,9 @@ checksum = "8b870d8c151b6f2fb93e84a13146138f05d02ed11c7e7c54f8826aaaf7c9f184"
 
 [[package]]
 name = "proc-macro2"
-version = "1.0.92"
+version = "1.0.93"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "37d3544b3f2748c54e147655edb5025752e2303145b5aefb3c3ea2c78b973bb0"
+checksum = "60946a68e5f9d28b0dc1c21bb8a97ee7d018a8b322fa57838ba31cc878e22d99"
 dependencies = [
  "unicode-ident",
 ]
@@ -338,6 +339,18 @@ name = "unicode-ident"
 version = "1.0.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "adb9e6ca4f869e1180728b7950e35922a7fc6397f7b641499e8f3ef06e50dc83"
+
+[[package]]
+name = "usb-descriptor-decoder"
+version = "0.1.0"
+source = "git+https://github.com/arceos-usb/usb-descriptor-decoder-rs.git#ad41200a9a1b2bcf18e0e6791767fcbd5e804f83"
+dependencies = [
+ "bit_field",
+ "log",
+ "num-derive 0.4.2",
+ "num-traits",
+ "tock-registers",
+]
 
 [[package]]
 name = "xhci"

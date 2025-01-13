@@ -23,6 +23,8 @@ where
 
     fn devices(&self) -> Vec<USBDevice>;
 
+    fn device<'a>(&'a self) -> &'a USBDevice;
+
     // fn control_transfer(
     //     &mut self,
     //     dev_slot_id: usize,

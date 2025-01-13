@@ -15,8 +15,9 @@ pub struct USBSystemConfig<O>
 where
     O: PlatformAbstractions,
 {
-    pub(crate) base_addr: O::VirtAddr,
-    pub(crate) irq_num: u32,
-    pub(crate) irq_priority: u32,
-    pub(crate) os: O,
+    pub base_addr: O::VirtAddr,
+    pub irq_num: u32,
+    pub irq_priority: u32,
+    pub device_request_buffer_size: usize,
+    pub os: O,
 }
