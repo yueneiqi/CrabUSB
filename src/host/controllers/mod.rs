@@ -9,11 +9,11 @@ use super::device::USBDevice;
 #[cfg(feature = "backend-xhci")]
 mod xhci;
 
-pub trait Controller<O>: Send
+pub trait Controller<O, const DEVICE_BUFFER_SIZE: usize>: Send
 where
     O: PlatformAbstractions,
 {
-    fn new(config: Arc<USBSystemConfig<O>>) -> Self
+    fn new(config: Arc<USBSystemConfig<O, DEVICE_BUFFER_SIZE>>) -> Self
     where
         Self: Sized;
 
@@ -21,9 +21,9 @@ where
 
     async fn probe(&mut self);
 
-    fn devices(&self) -> Vec<USBDevice>;
+    // fn devices(&self) -> &Vec<USBDevice<DEVICE_BUFFER_SIZE>>;
 
-    fn device<'a>(&'a self) -> &'a USBDevice;
+    // fn device<'a>(&'a self) -> &'a USBDevice<'a, DEVICE_BUFFER_SIZE>;
 
     // fn control_transfer(
     //     &mut self,

@@ -25,11 +25,11 @@ impl Mapper for MemMapper {
     fn unmap(&mut self, _virt_start: usize, _bytes: usize) {}
 }
 
-pub struct XHCI<O>
+pub struct XHCIInner<O, const _DEVICE_REQUEST_BUFFER_SIZE: usize>
 where
     O: PlatformAbstractions,
 {
-    config: Arc<USBSystemConfig<O>>,
+    config: Arc<USBSystemConfig<O, _DEVICE_REQUEST_BUFFER_SIZE>>,
     pub regs: RegistersBase,
     pub ext_list: Option<RegistersExtList>,
     max_slots: u8,
@@ -38,5 +38,5 @@ where
     scratchpad_buf_arr: Option<ScratchpadBufferArray<O>>,
     cmd: Ring<O>,
     event: EventRing<O>,
-    pub dev_ctx: DeviceContextList<O>,
+    pub dev_ctx: DeviceContextList<O, _DEVICE_REQUEST_BUFFER_SIZE>,
 }

@@ -1,3 +1,5 @@
+use core::usize;
+
 use crate::abstractions::dma::DMA;
 use crate::abstractions::{PlatformAbstractions, USBSystemConfig};
 
@@ -5,21 +7,21 @@ use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
-use embassy_sync::blocking_mutex::NoopMutex;
-pub use xhci::context::Device64Byte;
+use async_lock::RwLock;
+use xhci::context::Device64Byte;
 use xhci::context::{Device, Input64Byte};
 use xhci::ring::trb::transfer;
 
 use super::ring::Ring;
 const NUM_EPS: usize = 32;
 
-pub struct DeviceContextList<O>
+pub struct DeviceContextList<O, const _DEVICE_REQUEST_BUFFER_SIZE: usize>
 where
     O: PlatformAbstractions,
 {
-    config: Arc<USBSystemConfig<O>>,
+    config: Arc<USBSystemConfig<O, _DEVICE_REQUEST_BUFFER_SIZE>>,
     pub dcbaa: DMA<[u64; 256], O::DMA>,
-    pub device_ctx_inners: BTreeMap<usize, NoopMutex<DeviceCtxInner<O>>>,
+    pub device_ctx_inners: BTreeMap<usize, RwLock<DeviceCtxInner<O>>>,
 }
 
 pub struct DeviceCtxInner<O>
@@ -31,11 +33,11 @@ where
     pub transfer_rings: Vec<Ring<O>>,
 }
 
-impl<O> DeviceContextList<O>
+impl<O, const _DEVICE_REQUEST_BUFFER_SIZE: usize> DeviceContextList<O, _DEVICE_REQUEST_BUFFER_SIZE>
 where
     O: PlatformAbstractions,
 {
-    pub fn new(cfg: Arc<USBSystemConfig<O>>) -> Self {
+    pub fn new(cfg: Arc<USBSystemConfig<O, _DEVICE_REQUEST_BUFFER_SIZE>>) -> Self {
         Self {
             config: cfg.clone(),
             dcbaa: DMA::new([0u64; 256], 4096, cfg.os.dma_alloc()),
@@ -56,7 +58,7 @@ where
 
         self.device_ctx_inners.insert(
             slot,
-            NoopMutex::new(DeviceCtxInner {
+            RwLock::new(DeviceCtxInner {
                 out_ctx: { DMA::new(Device::new_64byte(), 4096, os.dma_alloc()) },
                 in_ctx: { DMA::new(Input64Byte::new_64byte(), 4096, os.dma_alloc()) },
                 transfer_rings: {

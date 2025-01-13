@@ -11,13 +11,12 @@ pub trait PlatformAbstractions: Clone + Send + Sync + Sized {
 }
 
 #[derive(Clone, Debug)]
-pub struct USBSystemConfig<O>
+pub struct USBSystemConfig<O, const DEVICE_REQUEST_BUFFER_SIZE: usize>
 where
     O: PlatformAbstractions,
 {
     pub base_addr: O::VirtAddr,
     pub irq_num: u32,
     pub irq_priority: u32,
-    pub device_request_buffer_size: usize,
     pub os: O,
 }
