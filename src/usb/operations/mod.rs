@@ -1,9 +1,18 @@
 pub mod configurations;
 pub mod isoch;
-use core::{fmt::Debug, future::Future};
+use core::{
+    default,
+    fmt::Debug,
+    future::{Future, IntoFuture},
+    ops::AsyncFnOnce,
+    task::Poll,
+};
 
-use alloc::sync::Arc;
-use async_lock::SemaphoreGuardArc;
+use alloc::{boxed::Box, sync::Arc};
+use async_lock::{
+    futures::LockArc, Mutex, MutexGuard, MutexGuardArc, OnceCell, RwLock, RwLockWriteGuardArc,
+    SemaphoreGuardArc,
+};
 use bulk::BulkTransfer;
 use control::ControlTransfer;
 use interrupt::InterruptTransfer;
@@ -17,12 +26,11 @@ pub mod bulk;
 pub mod control;
 pub mod interrupt;
 
-type OptionalCallback = Option<Arc<dyn Fn(Result<(), OperationErrors>)>>;
-
 #[derive(Default)]
 pub struct USBRequest {
+    pub extra_action: ExtraAction,
     pub operation: RequestedOperation,
-    pub callback: OptionalCallback,
+    pub complete_action: CompleteAction,
 }
 
 impl USBRequest {
@@ -42,6 +50,43 @@ impl Debug for USBRequest {
     }
 }
 
+pub type ChannelNumber = u16;
+
+#[derive(Debug, Default)]
+pub enum ExtraAction {
+    #[default]
+    NOOP,
+    KeepFill(ChannelNumber),
+}
+
+pub type CallbackFn = Arc<dyn FnOnce(RequestResult) + Send + Sync>;
+pub type CallbackValueSetter = MutexGuardArc<OnceCell<RequestResult>>;
+pub struct CallbackValue(Arc<Mutex<OnceCell<RequestResult>>>);
+
+impl CallbackValue {
+    pub fn new() -> (CallbackValue, CallbackValueSetter) {
+        let mutex = Arc::new(Mutex::new(OnceCell::new()));
+        let lock_arc = mutex.try_lock_arc().unwrap();
+        (CallbackValue(mutex), lock_arc)
+    }
+
+    pub async fn get(self) -> RequestResult {
+        self.0
+            .lock()
+            .await
+            .take()
+            .expect("value not been set! check your code")
+    }
+}
+
+#[derive(Default)]
+pub enum CompleteAction {
+    #[default]
+    NOOP,
+    Callback(CallbackFn),
+    SimpleResponse(MutexGuardArc<OnceCell<RequestResult>>),
+}
+
 #[derive(Debug, Default)]
 pub enum RequestedOperation {
     Control(ControlTransfer, ConfigureSemaphore),
@@ -54,7 +99,9 @@ pub enum RequestedOperation {
 }
 
 #[derive(Clone, Debug)]
-pub enum OperationErrors {}
+pub enum RequestResult {
+    Success,
+}
 
 /// The direction of the data transfer.
 #[derive(Copy, Clone, Debug, Ord, PartialOrd, Eq, PartialEq, Hash, FromPrimitive)]

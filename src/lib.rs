@@ -1,5 +1,5 @@
 #![no_std]
-#![feature(allocator_api, let_chains, exclusive_wrapper)]
+#![feature(allocator_api, let_chains, exclusive_wrapper, async_closure)]
 
 use abstractions::{PlatformAbstractions, USBSystemConfig};
 use alloc::sync::Arc;

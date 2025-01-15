@@ -1,6 +1,9 @@
 use alloc::{sync::Arc, vec::Vec};
 
-use crate::abstractions::{PlatformAbstractions, USBSystemConfig};
+use crate::{
+    abstractions::{PlatformAbstractions, USBSystemConfig},
+    usb::operations::USBRequest,
+};
 
 use super::device::USBDevice;
 
@@ -21,40 +24,10 @@ where
 
     async fn probe(&mut self);
 
-    // fn devices(&self) -> &Vec<USBDevice<DEVICE_BUFFER_SIZE>>;
+    /// each device should able to access actual transfer function in controller
+    fn device_accesses(&self) -> Vec<Arc<USBDevice<DEVICE_BUFFER_SIZE>>>;
 
-    // fn device<'a>(&'a self) -> &'a USBDevice<'a, DEVICE_BUFFER_SIZE>;
-
-    // fn control_transfer(
-    //     &mut self,
-    //     dev_slot_id: usize,
-    //     urb_req: ControlTransfer,
-    // ) -> crate::err::Result<UCB<O>>;
-
-    // fn interrupt_transfer(
-    //     &mut self,
-    //     dev_slot_id: usize,
-    //     urb_req: InterruptTransfer,
-    // ) -> crate::err::Result<UCB<O>>;
-
-    // fn bulk_transfer(
-    //     &mut self,
-    //     dev_slot_id: usize,
-    //     urb_req: BulkTransfer,
-    // ) -> crate::err::Result<UCB<O>>;
-
-    // fn configure_device(
-    //     &mut self,
-    //     dev_slot_id: usize,
-    //     urb_req: Configuration,
-    // ) -> crate::err::Result<UCB<O>>;
-
-    // fn extra_step(&mut self, dev_slot_id: usize, urb_req: ExtraStep) -> crate::err::Result<UCB<O>>;
-
-    // fn device_slot_assignment(&mut self) -> usize;
-    // fn address_device(&mut self, slot_id: usize, port_id: usize);
-    // fn control_fetch_control_point_packet_size(&mut self, slot_id: usize) -> u8;
-    // fn set_ep0_packet_size(&mut self, dev_slot_id: usize, max_packet_size: u16);
+    async fn post_emerge_request(&mut self, req: USBRequest);
 }
 
 // #[cfg(feature = "cotton-frontend")]
