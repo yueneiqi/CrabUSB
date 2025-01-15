@@ -1,24 +1,16 @@
 pub mod configurations;
 pub mod isoch;
-use core::{
-    default,
-    fmt::Debug,
-    future::{Future, IntoFuture},
-    ops::AsyncFnOnce,
-    task::Poll,
-};
+use core::fmt::Debug;
 
-use alloc::{boxed::Box, sync::Arc};
+use alloc::sync::Arc;
 use async_lock::{
-    futures::LockArc, Mutex, MutexGuard, MutexGuardArc, OnceCell, RwLock, RwLockWriteGuardArc,
-    SemaphoreGuardArc,
+    Mutex, MutexGuardArc, OnceCell,
 };
 use bulk::BulkTransfer;
 use control::ControlTransfer;
 use interrupt::InterruptTransfer;
 use isoch::IsochTransfer;
 use num_derive::FromPrimitive;
-use usb_descriptor_decoder::descriptors::desc_configuration::Configuration;
 
 use crate::host::device::ConfigureSemaphore;
 

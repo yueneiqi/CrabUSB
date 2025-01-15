@@ -1,19 +1,8 @@
-use core::{
-    cell::{Cell, RefCell, UnsafeCell},
-    future::IntoFuture,
-    marker::PhantomData,
-    ops::DerefMut,
-    sync::Exclusive,
-    task::Waker,
-};
-
 use alloc::{format, sync::Arc};
 
-use async_lock::{futures::LockArc, Mutex, OnceCell, RwLock, Semaphore, SemaphoreGuardArc};
+use async_lock::{RwLock, Semaphore, SemaphoreGuardArc};
 use async_ringbuf::{traits::AsyncProducer, AsyncStaticProd};
-use usb_descriptor_decoder::descriptors::{
-    desc_configuration::Configuration, topological_desc::TopologicalUSBDescriptorRoot,
-};
+use usb_descriptor_decoder::descriptors::topological_desc::TopologicalUSBDescriptorRoot;
 
 use crate::usb::operations::{
     CallbackFn, CallbackValue, ChannelNumber, CompleteAction, ExtraAction, RequestResult,
@@ -37,6 +26,7 @@ pub enum DeviceState {
     Probed,
     Assigned,
     Configured(usize),
+    preDrop, //for hot plug,  how to design drop all working functions mechanism?
 }
 
 #[derive(Debug)]

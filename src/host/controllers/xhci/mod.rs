@@ -1,8 +1,9 @@
-use core::num::NonZeroUsize;
+use core::{mem, num::NonZeroUsize};
 
 use alloc::{sync::Arc, vec::Vec};
 use context::{DeviceContextList, ScratchpadBufferArray};
 use event_ring::EventRing;
+use log::{debug, trace};
 use ring::Ring;
 use xhci::{accessor::Mapper, extended_capabilities::XhciSupportedProtocol};
 
@@ -20,6 +21,8 @@ mod ring;
 pub type RegistersBase = xhci::Registers<MemMapper>;
 pub type RegistersExtList = xhci::extended_capabilities::List<MemMapper>;
 pub type SupportedProtocol = XhciSupportedProtocol<MemMapper>;
+
+const TAG: &str = "[XHCI]";
 
 #[derive(Clone)]
 pub struct MemMapper;
@@ -63,7 +66,49 @@ where
     where
         Self: Sized,
     {
-        todo!()
+        let mmio_base = config.base_addr.clone().into();
+        unsafe {
+            let regs = RegistersBase::new(mmio_base, MemMapper);
+            let ext_list =
+                RegistersExtList::new(mmio_base, regs.capability.hccparams1.read(), MemMapper);
+
+            let hcsp1 = regs.capability.hcsparams1.read_volatile();
+            let max_slots = hcsp1.number_of_device_slots();
+            let max_ports = hcsp1.number_of_ports();
+            let max_irqs = hcsp1.number_of_interrupts();
+            let page_size = regs.operational.pagesize.read_volatile().get();
+            debug!(
+                "{TAG} Max_slots: {}, max_ports: {}, max_irqs: {}, page size: {}",
+                max_slots, max_ports, max_irqs, page_size
+            );
+
+            trace!("new dev ctx!");
+            let dev_ctx = DeviceContextList::new(config.clone());
+
+            // Create the command ring with 4096 / 16 (TRB size) entries, so that it uses all of the
+            // DMA allocation (which is at least a 4k page).
+            let entries_per_page = O::PAGE_SIZE / mem::size_of::<ring::TrbData>();
+            trace!("new cmd ring");
+            let cmd = Ring::new(config.os.clone(), entries_per_page, true);
+            trace!("new evt ring");
+            let event = EventRing::new(config.os.clone());
+
+            debug!("{TAG} ring size {}", cmd.len());
+
+            Self {
+                regs,
+                ext_list,
+                config: config.clone(),
+                max_slots,
+                max_ports,
+                max_irqs,
+                scratchpad_buf_arr: None,
+                cmd,
+                event,
+                dev_ctx,
+                devices: Vec::new(),
+            }
+        }
     }
 
     async fn init(&mut self) {

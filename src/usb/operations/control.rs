@@ -1,8 +1,5 @@
-use alloc::vec::Vec;
 use num_derive::FromPrimitive;
-use xhci::ring::trb::transfer::TransferType;
 
-use crate::abstractions::{dma::DMA, PlatformAbstractions};
 
 use super::{
     configurations::{AltnativeNumber, ConfigurationID, InterfaceNumber},
