@@ -129,7 +129,7 @@ impl<O: PlatformAbstractions> Ring<O> {
         is_cycle
     }
 
-    pub fn current_data(&mut self) -> (&TrbData, bool) {
+    pub fn current_data(&self) -> (&TrbData, bool) {
         (&self.trbs[self.i], self.cycle)
     }
 

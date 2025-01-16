@@ -1,4 +1,6 @@
-use core::alloc::Allocator;
+use core::{alloc::Allocator, fmt::Debug};
+
+use alloc::sync::Arc;
 
 pub mod dma;
 
@@ -10,13 +12,14 @@ pub trait PlatformAbstractions: Clone + Send + Sync + Sized {
     fn dma_alloc(&self) -> Self::DMA;
 }
 
-#[derive(Clone, Debug)]
+pub type InterruptRegister = dyn Fn(dyn Fn()) + Send + Sync;
+
+#[derive(Clone)]
 pub struct USBSystemConfig<O, const DEVICE_REQUEST_BUFFER_SIZE: usize>
 where
     O: PlatformAbstractions,
 {
     pub base_addr: O::VirtAddr,
-    pub irq_num: u32,
-    pub irq_priority: u32,
+    pub interrupt_register: Option<Arc<InterruptRegister>>,
     pub os: O,
 }

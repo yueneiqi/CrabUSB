@@ -1,32 +1,32 @@
-use alloc::{format, sync::Arc};
+use alloc::{borrow::ToOwned, format, sync::Arc};
 
-use async_lock::{RwLock, Semaphore, SemaphoreGuardArc};
+use async_lock::{OnceCell, RwLock, Semaphore, SemaphoreGuardArc};
 use async_ringbuf::{traits::AsyncProducer, AsyncStaticProd};
 use usb_descriptor_decoder::descriptors::topological_desc::TopologicalUSBDescriptorRoot;
 
-use crate::usb::operations::{
-    CallbackFn, CallbackValue, ChannelNumber, CompleteAction, ExtraAction, RequestResult,
-    RequestedOperation, USBRequest,
+use crate::usb::{
+    operations::{
+        CallbackFn, ChannelNumber, CompleteAction, ExtraAction, RequestResult, RequestedOperation,
+        USBRequest,
+    },
+    standards::RouteString,
 };
 
 pub struct USBDevice<'a, const SIZE: usize> {
     pub state: Arc<RwLock<DeviceState>>,
     pub vendor_id: u16,
     pub product_id: u16,
-    pub topology_path: USBTopologyPath,
+    pub topology_path: RouteString,
     pub descriptor: Arc<TopologicalUSBDescriptorRoot>,
     configure_sem: Arc<Semaphore>,
     request_channel: RwLock<AsyncStaticProd<'a, USBRequest, SIZE>>,
 }
 
-#[derive(Default, Debug, Clone)]
-pub struct USBTopologyPath(u32);
-
 pub enum DeviceState {
     Probed,
     Assigned,
     Configured(usize),
-    preDrop, //for hot plug,  how to design drop all working functions mechanism?
+    PreDrop, //for hot plug,  how to design drop all working functions mechanism?
 }
 
 #[derive(Debug)]
@@ -76,16 +76,16 @@ impl<'a, const CHANNEL_SIZE: usize> USBDevice<'a, CHANNEL_SIZE> {
     }
 
     ///I must lost my mind...
-    pub async fn request_once(&self, request: RequestedOperation) -> RequestResult {
-        let (val, setter) = CallbackValue::new();
+    pub async fn request_once(&self, request: RequestedOperation) -> Result<RequestResult, usize> {
+        let cell = Arc::new(OnceCell::new());
         self.post_usb_request(USBRequest {
             extra_action: ExtraAction::NOOP,
             operation: request,
-            complete_action: CompleteAction::SimpleResponse(setter),
+            complete_action: CompleteAction::SimpleResponse(cell.clone()),
         })
         .await;
 
-        val.get().await
+        cell.wait().await.to_owned()
     }
 
     pub async fn keep_request(

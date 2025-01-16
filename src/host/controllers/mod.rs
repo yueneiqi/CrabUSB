@@ -1,4 +1,5 @@
 use alloc::{sync::Arc, vec::Vec};
+use async_lock::RwLock;
 
 use crate::{
     abstractions::{PlatformAbstractions, USBSystemConfig},
@@ -25,9 +26,7 @@ where
     async fn probe(&mut self);
 
     /// each device should able to access actual transfer function in controller
-    fn device_accesses(&self) -> Vec<Arc<USBDevice<DEVICE_BUFFER_SIZE>>>;
-
-    async fn post_emerge_request(&mut self, req: USBRequest);
+    fn device_accesses(&self) -> Arc<RwLock<Vec<USBDevice<DEVICE_BUFFER_SIZE>>>>;
 }
 
 // #[cfg(feature = "cotton-frontend")]

@@ -76,6 +76,29 @@ where
         Some((allowed, cycle))
     }
 
+    pub fn has_next(&self) -> bool {
+        let (data, flag) = self.ring.current_data();
+        let data = unsafe {
+            let mut out = [0u32; 4];
+            for i in 0..out.len() {
+                out[i] = data.as_ptr().offset(i as _).read_volatile();
+            }
+            out
+        };
+
+        Allowed::try_from(data).is_ok_and(|allowed| {
+            flag == allowed.cycle_bit() && {
+                if let Allowed::TransferEvent(c) = allowed
+                    && let Ok(CompletionCode::Invalid) = c.completion_code()
+                {
+                    return false;
+                } else {
+                    true
+                }
+            }
+        })
+    }
+
     pub fn erdp(&self) -> u64 {
         self.ring.register() & 0xFFFF_FFFF_FFFF_FFF0
     }
