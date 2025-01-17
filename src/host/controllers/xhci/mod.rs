@@ -1,33 +1,29 @@
 use core::{
     cell::UnsafeCell,
-    error::Error,
-    future::{self, Future, IntoFuture},
     mem,
     num::NonZeroUsize,
     sync::atomic::{fence, Ordering},
 };
 
-use ::futures::{stream, FutureExt, Stream, StreamExt};
-use alloc::{borrow::ToOwned, collections::btree_map::BTreeMap, format, sync::Arc, vec::Vec};
-use async_lock::{futures, Mutex, MutexGuardArc, OnceCell, RwLock};
+use ::futures::{stream, FutureExt, StreamExt};
+use alloc::{borrow::ToOwned, collections::btree_map::BTreeMap, sync::Arc, vec::Vec};
+use async_lock::{OnceCell, RwLock};
 use async_ringbuf::{
     traits::{AsyncConsumer, AsyncProducer},
     AsyncStaticCons,
 };
 use axhid::hidreport::hid::Item;
 use context::{DeviceContextList, ScratchpadBufferArray};
-use embassy_futures::join::{self, join_array, JoinArray};
 use event_ring::EventRing;
 use log::{debug, error, info, trace, warn};
 use ring::Ring;
 use ringbuf::traits::Consumer;
 use xhci::{
     accessor::Mapper,
-    context::Slot,
     extended_capabilities::XhciSupportedProtocol,
     ring::trb::{
         command,
-        event::{self, CommandCompletion, CompletionCode},
+        event::{self, CompletionCode},
         transfer::{self, TransferType},
     },
 };
@@ -36,8 +32,7 @@ use crate::{
     abstractions::{PlatformAbstractions, USBSystemConfig},
     host::device::USBDevice,
     usb::operations::{
-        control::ControlTransfer, CallbackValue, CompleteAction, Direction, ExtraAction,
-        RequestResult, USBRequest,
+        control::ControlTransfer, CompleteAction, Direction, RequestResult, USBRequest,
     },
 };
 

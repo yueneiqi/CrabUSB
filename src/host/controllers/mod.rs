@@ -1,10 +1,7 @@
 use alloc::{sync::Arc, vec::Vec};
-use async_lock::{Mutex, RwLock};
+use async_lock::RwLock;
 
-use crate::{
-    abstractions::{PlatformAbstractions, USBSystemConfig},
-    usb::operations::USBRequest,
-};
+use crate::abstractions::{PlatformAbstractions, USBSystemConfig};
 
 use super::device::USBDevice;
 

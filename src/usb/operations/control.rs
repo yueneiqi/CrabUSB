@@ -1,4 +1,4 @@
-use num_derive::{FromPrimitive, ToPrimitive};
+use num_derive::FromPrimitive;
 
 use super::{
     configurations::{AltnativeNumber, ConfigurationID, InterfaceNumber},

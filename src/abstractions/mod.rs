@@ -1,4 +1,4 @@
-use core::{alloc::Allocator, fmt::Debug};
+use core::alloc::Allocator;
 
 use alloc::sync::Arc;
 

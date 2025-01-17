@@ -1,9 +1,9 @@
 pub mod configurations;
 pub mod isoch;
-use core::{cell::UnsafeCell, fmt::Debug};
+use core::fmt::Debug;
 
 use alloc::sync::Arc;
-use async_lock::{OnceCell, Semaphore};
+use async_lock::OnceCell;
 use bulk::BulkTransfer;
 use control::ControlTransfer;
 use interrupt::InterruptTransfer;

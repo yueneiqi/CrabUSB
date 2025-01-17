@@ -1,11 +1,7 @@
-use core::default;
-use core::fmt::Debug;
-
-use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
+use tock_registers::interfaces::{Readable, Writeable};
+use tock_registers::register_bitfields;
 ///utils according to USB standard
-use tock_registers::registers::{InMemoryRegister, ReadOnly, ReadWrite};
-use tock_registers::{fields, register_bitfields, register_fields, RegisterLongName};
-use RouteString_REG::HUB_TIER0;
+use tock_registers::registers::InMemoryRegister;
 
 /// The Route String is a 20-bit field in downstream directed packets that the hub uses to route
 /// each packet to the designated downstream port.  It is composed of a concatenation of the

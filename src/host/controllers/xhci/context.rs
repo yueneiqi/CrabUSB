@@ -8,8 +8,6 @@ use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
-use async_lock::{Mutex, RwLock};
-use futures::channel;
 use xhci::context::Device64Byte;
 use xhci::context::{Device, Input64Byte};
 use xhci::ring::trb::transfer;
