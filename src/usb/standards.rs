@@ -28,6 +28,12 @@ pub struct RouteString(InMemoryRegister<u32, RouteString_REG::Register>);
 unsafe impl Send for RouteString {}
 unsafe impl Sync for RouteString {}
 
+impl Default for RouteString {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RouteString {
     pub fn new() -> Self {
         Self(InMemoryRegister::new(0))

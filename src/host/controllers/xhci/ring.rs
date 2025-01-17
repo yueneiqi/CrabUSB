@@ -43,7 +43,7 @@ impl<O: PlatformAbstractions> Ring<O> {
         } else {
             trb.clear_cycle_bit();
         }
-        let addr = self.enque_trb(trb.clone().into_raw());
+        let addr = self.enque_trb(trb.into_raw());
         trace!("[CMD] >> {:?} @{:X}", trb, addr);
         addr
     }
@@ -54,8 +54,8 @@ impl<O: PlatformAbstractions> Ring<O> {
         } else {
             trb.clear_cycle_bit();
         }
-        let addr = self.enque_trb(trb.clone().into_raw());
-        addr
+        
+        self.enque_trb(trb.into_raw())
     }
 
     pub fn enque_trb(&mut self, trb: TrbData) -> usize {
@@ -118,12 +118,10 @@ impl<O: PlatformAbstractions> Ring<O> {
         let mut is_cycle = false;
         let len = self.len();
         if self.link {
-        } else {
-            if self.i >= len {
-                self.i = 0;
-                self.cycle = !self.cycle;
-                is_cycle = true;
-            }
+        } else if self.i >= len {
+            self.i = 0;
+            self.cycle = !self.cycle;
+            is_cycle = true;
         }
 
         is_cycle

@@ -49,11 +49,11 @@ where
         unsafe { self.dcbaa.get().read_volatile() }.as_ptr() as _
     }
 
-    pub fn write_transfer_ring<'a>(
-        &'a mut self,
+    pub fn write_transfer_ring(
+        &mut self,
         slot: u8,
         channel: usize,
-    ) -> Option<&'a mut Ring<O>> {
+    ) -> Option<&mut Ring<O>> {
         self.device_ctx_inners
             .get_mut(&(slot as _))?
             .transfer_rings
@@ -74,7 +74,6 @@ where
                 in_ctx: { DMA::new(Input64Byte::new_64byte(), 4096, os.dma_alloc()) },
                 transfer_rings: {
                     (0..num_ep)
-                        .into_iter()
                         .map(|_| Ring::new(os.clone(), 32, true))
                         .map(Self::prepare_transfer_ring)
                         .collect()

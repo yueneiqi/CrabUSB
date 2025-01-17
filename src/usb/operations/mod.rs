@@ -23,7 +23,7 @@ pub struct USBRequest<'a, const N: usize> {
     pub complete_action: CompleteAction<'a, N>,
 }
 
-impl<'a, const N: usize> USBRequest<'a, N> {
+impl<const N: usize> USBRequest<'_, N> {
     pub fn is_control(&self) -> bool {
         match self.operation {
             RequestedOperation::Control(_) => true,
@@ -32,7 +32,7 @@ impl<'a, const N: usize> USBRequest<'a, N> {
     }
 }
 
-impl<'a, const N: usize> Debug for USBRequest<'a, N> {
+impl<const N: usize> Debug for USBRequest<'_, N> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("USBRequest")
             .field("operation", &self.operation)

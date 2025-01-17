@@ -52,7 +52,7 @@ const TAG: &str = "[XHCI]";
 pub struct MemMapper;
 impl Mapper for MemMapper {
     unsafe fn map(&mut self, phys_start: usize, _bytes: usize) -> NonZeroUsize {
-        return NonZeroUsize::new_unchecked(phys_start);
+        NonZeroUsize::new_unchecked(phys_start)
     }
     fn unmap(&mut self, _virt_start: usize, _bytes: usize) {}
 }
@@ -417,7 +417,7 @@ where
         } else if self.extra_works.contains_key(&addr) {
             match &mut self.extra_works.get_mut(&addr).unwrap().complete_action {
                 CompleteAction::KeepResponse(async_wrap) => {
-                    async_wrap
+                    let _ = async_wrap
                         .push(code.map(|a| a.into()).map_err(|a| a as _))
                         .await;
                 }
@@ -543,8 +543,8 @@ where
     }
 }
 
-impl<'a, O, const _DEVICE_REQUEST_BUFFER_SIZE: usize> Controller<O, _DEVICE_REQUEST_BUFFER_SIZE>
-    for XHCIController<'a, O, _DEVICE_REQUEST_BUFFER_SIZE>
+impl<O, const _DEVICE_REQUEST_BUFFER_SIZE: usize> Controller<O, _DEVICE_REQUEST_BUFFER_SIZE>
+    for XHCIController<'_, O, _DEVICE_REQUEST_BUFFER_SIZE>
 where
     O: PlatformAbstractions,
 {
@@ -553,7 +553,7 @@ where
         Self: Sized,
     {
         let mmio_base = config.base_addr.clone().into();
-        return unsafe {
+        unsafe {
             let regs = RegistersBase::new(mmio_base, MemMapper);
             let ext_list = RegistersExtList::new(
                 mmio_base,
@@ -599,7 +599,7 @@ where
                 requests: UnsafeCell::new(Vec::new()), //safety: only controller itself could fetch, all acccess via run_once
                 extra_works: BTreeMap::new(),
             }
-        };
+        }
     }
 
     fn init(&self) {

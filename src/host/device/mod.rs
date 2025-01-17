@@ -1,4 +1,4 @@
-use alloc::{borrow::ToOwned, format, sync::Arc};
+use alloc::{borrow::ToOwned, sync::Arc};
 
 use async_lock::{OnceCell, RwLock, Semaphore, SemaphoreGuardArc};
 use async_ringbuf::{traits::AsyncProducer, AsyncStaticProd};
@@ -51,7 +51,7 @@ impl<'a, const BUFFER_SIZE: usize> USBDevice<'a, BUFFER_SIZE> {
     pub fn acquire_cfg_sem(&self) -> Option<ConfigureSemaphore> {
         self.configure_sem
             .try_acquire_arc()
-            .map(|sem| ConfigureSemaphore(sem))
+            .map(ConfigureSemaphore)
     }
 
     async fn post_usb_request(&self, request: USBRequest<'a, BUFFER_SIZE>) {
@@ -60,10 +60,8 @@ impl<'a, const BUFFER_SIZE: usize> USBDevice<'a, BUFFER_SIZE> {
             .await
             .push(request)
             .await
-            .expect(&format!(
-                "device channel droped, wtf? vendor-{}|product-{}",
-                self.vendor_id, self.product_id,
-            ))
+            .unwrap_or_else(|_| panic!("device channel droped, wtf? vendor-{}|product-{}",
+                self.vendor_id, self.product_id))
     }
 
     pub async fn request_oneshot(&self, request: RequestedOperation) {

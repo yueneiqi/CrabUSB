@@ -49,7 +49,7 @@ where
             layout,
             data,
             allocator,
-            __marker: PhantomData::default(),
+            __marker: PhantomData,
         }
     }
 
@@ -102,7 +102,7 @@ where
             layout,
             data,
             allocator,
-            __marker: PhantomData::default(),
+            __marker: PhantomData,
         }
     }
 
@@ -129,7 +129,7 @@ where
             layout,
             data,
             allocator,
-            __marker: PhantomData::default(),
+            __marker: PhantomData,
         }
     }
 }

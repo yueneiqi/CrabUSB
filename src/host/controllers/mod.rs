@@ -1,11 +1,10 @@
+///host layer
 use alloc::{sync::Arc, vec::Vec};
 use async_lock::RwLock;
 
 use crate::abstractions::{PlatformAbstractions, USBSystemConfig};
 
 use super::device::USBDevice;
-
-///host layer
 
 #[cfg(feature = "backend-xhci")]
 mod xhci;

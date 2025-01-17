@@ -42,7 +42,7 @@ where
         ring.ste[0].addr_low.set(ring.ring.register() as u32);
         ring.ste[0]
             .addr_high
-            .set((ring.ring.register() as u64 >> 32) as u32);
+            .set((ring.ring.register() >> 32) as u32);
         ring.ste[0].size.set(ring.ring.trbs.len() as u16);
 
         ring
@@ -54,7 +54,7 @@ where
         let data = unsafe {
             let mut out = [0u32; 4];
             for i in 0..out.len() {
-                out[i] = data.as_ptr().offset(i as _).read_volatile();
+                out[i] = data.as_ptr().add(i).read_volatile();
             }
             out
         };
@@ -81,7 +81,7 @@ where
         let data = unsafe {
             let mut out = [0u32; 4];
             for i in 0..out.len() {
-                out[i] = data.as_ptr().offset(i as _).read_volatile();
+                out[i] = data.as_ptr().add(i).read_volatile();
             }
             out
         };
