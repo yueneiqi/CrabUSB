@@ -1,3 +1,4 @@
+use core::cell::UnsafeCell;
 use core::usize;
 
 use crate::abstractions::dma::DMA;
@@ -7,7 +8,8 @@ use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
-use async_lock::RwLock;
+use async_lock::{Mutex, RwLock};
+use futures::channel;
 use xhci::context::Device64Byte;
 use xhci::context::{Device, Input64Byte};
 use xhci::ring::trb::transfer;
@@ -20,8 +22,8 @@ where
     O: PlatformAbstractions,
 {
     config: Arc<USBSystemConfig<O, _DEVICE_REQUEST_BUFFER_SIZE>>,
-    pub dcbaa: DMA<[u64; 256], O::DMA>,
-    pub device_ctx_inners: BTreeMap<usize, RwLock<DeviceCtxInner<O>>>,
+    pub dcbaa: UnsafeCell<DMA<[u64; 256], O::DMA>>,
+    pub device_ctx_inners: BTreeMap<usize, DeviceCtxInner<O>>,
 }
 
 pub struct DeviceCtxInner<O>
@@ -40,13 +42,24 @@ where
     pub fn new(cfg: Arc<USBSystemConfig<O, _DEVICE_REQUEST_BUFFER_SIZE>>) -> Self {
         Self {
             config: cfg.clone(),
-            dcbaa: DMA::new([0u64; 256], 4096, cfg.os.dma_alloc()),
+            dcbaa: DMA::new([0u64; 256], 4096, cfg.os.dma_alloc()).into(),
             device_ctx_inners: BTreeMap::new(),
         }
     }
 
     pub fn dcbaap(&self) -> usize {
-        self.dcbaa.as_ptr() as _
+        unsafe { self.dcbaa.get().read_volatile() }.as_ptr() as _
+    }
+
+    pub fn write_transfer_ring<'a>(
+        &'a mut self,
+        slot: u8,
+        channel: usize,
+    ) -> Option<&'a mut Ring<O>> {
+        self.device_ctx_inners
+            .get_mut(&(slot as _))?
+            .transfer_rings
+            .get_mut(channel)
     }
 
     pub fn new_slot(
@@ -58,7 +71,7 @@ where
 
         self.device_ctx_inners.insert(
             slot,
-            RwLock::new(DeviceCtxInner {
+            DeviceCtxInner {
                 out_ctx: { DMA::new(Device::new_64byte(), 4096, os.dma_alloc()) },
                 in_ctx: { DMA::new(Input64Byte::new_64byte(), 4096, os.dma_alloc()) },
                 transfer_rings: {
@@ -68,7 +81,7 @@ where
                         .map(Self::prepare_transfer_ring)
                         .collect()
                 },
-            }),
+            },
         );
     }
 
@@ -76,7 +89,7 @@ where
         //in our code, the init state of transfer ring always has ccs = 0, so we use ccs =1 to fill transfer ring
         let mut normal = transfer::Normal::default();
         normal.set_cycle_bit();
-        r.enque_trbs(vec![normal.into_raw(); r.len() - 1]); //the n'th is link trb
+        r.enque_trbs_no_check(vec![normal.into_raw(); r.len() - 1]); //the n'th is link trb
         r
     }
 }

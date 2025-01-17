@@ -69,7 +69,7 @@ impl<O: PlatformAbstractions> Ring<O> {
         addr
     }
 
-    pub fn enque_trbs(&mut self, trb: Vec<TrbData>) {
+    pub fn enque_trbs_no_check(&mut self, trb: Vec<TrbData>) {
         for ele in trb {
             self.enque_trb(ele);
         }

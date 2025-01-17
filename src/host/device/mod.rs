@@ -12,14 +12,14 @@ use crate::usb::{
     standards::RouteString,
 };
 
-pub struct USBDevice<'a, const SIZE: usize> {
+pub struct USBDevice<'a, const BUFFER_SIZE: usize> {
     pub state: Arc<RwLock<DeviceState>>,
     pub vendor_id: u16,
     pub product_id: u16,
     pub topology_path: RouteString,
     pub descriptor: Arc<TopologicalUSBDescriptorRoot>,
     configure_sem: Arc<Semaphore>,
-    request_channel: RwLock<AsyncStaticProd<'a, USBRequest, SIZE>>,
+    request_channel: RwLock<AsyncStaticProd<'a, USBRequest<'a, BUFFER_SIZE>, BUFFER_SIZE>>,
 }
 
 pub enum DeviceState {
@@ -32,10 +32,10 @@ pub enum DeviceState {
 #[derive(Debug)]
 pub struct ConfigureSemaphore(SemaphoreGuardArc);
 
-impl<'a, const CHANNEL_SIZE: usize> USBDevice<'a, CHANNEL_SIZE> {
+impl<'a, const BUFFER_SIZE: usize> USBDevice<'a, BUFFER_SIZE> {
     pub fn new(
         descriptor: Arc<TopologicalUSBDescriptorRoot>,
-        sender: AsyncStaticProd<'a, USBRequest, CHANNEL_SIZE>,
+        sender: AsyncStaticProd<'a, USBRequest<'a, BUFFER_SIZE>, BUFFER_SIZE>,
     ) -> Result<Self, ()> {
         Ok(USBDevice {
             state: RwLock::new(DeviceState::Probed).into(),
@@ -44,7 +44,7 @@ impl<'a, const CHANNEL_SIZE: usize> USBDevice<'a, CHANNEL_SIZE> {
             descriptor,
             request_channel: sender.into(),
             configure_sem: Semaphore::new(1).into(),
-            topology_path: todo!(),
+            topology_path: RouteString::new(),
         })
     }
 
@@ -54,7 +54,7 @@ impl<'a, const CHANNEL_SIZE: usize> USBDevice<'a, CHANNEL_SIZE> {
             .map(|sem| ConfigureSemaphore(sem))
     }
 
-    async fn post_usb_request(&self, request: USBRequest) {
+    async fn post_usb_request(&self, request: USBRequest<'a, BUFFER_SIZE>) {
         self.request_channel
             .write()
             .await
@@ -76,7 +76,7 @@ impl<'a, const CHANNEL_SIZE: usize> USBDevice<'a, CHANNEL_SIZE> {
     }
 
     ///I must lost my mind...
-    pub async fn request_once(&self, request: RequestedOperation) -> Result<RequestResult, usize> {
+    pub async fn request_once(&self, request: RequestedOperation) -> Result<RequestResult, u8> {
         let cell = Arc::new(OnceCell::new());
         self.post_usb_request(USBRequest {
             extra_action: ExtraAction::NOOP,
@@ -106,9 +106,9 @@ impl<'a, const CHANNEL_SIZE: usize> USBDevice<'a, CHANNEL_SIZE> {
         {
             let sem = self.configure_sem.acquire_arc().await;
             self.post_usb_request(USBRequest {
-                operation: RequestedOperation::Assign(ConfigureSemaphore(sem)),
+                operation: RequestedOperation::Assign,
                 extra_action: ExtraAction::default(),
-                complete_action: CompleteAction::default(),
+                complete_action: CompleteAction::DropSem(ConfigureSemaphore(sem)),
             })
             .await;
         }

@@ -1,5 +1,5 @@
 use alloc::{sync::Arc, vec::Vec};
-use async_lock::RwLock;
+use async_lock::{Mutex, RwLock};
 
 use crate::{
     abstractions::{PlatformAbstractions, USBSystemConfig},
@@ -21,9 +21,9 @@ where
     where
         Self: Sized;
 
-    async fn init(&mut self);
+    fn init(&self);
 
-    async fn probe(&mut self);
+    async fn probe(&self);
 
     /// each device should able to access actual transfer function in controller
     fn device_accesses(&self) -> Arc<RwLock<Vec<USBDevice<DEVICE_BUFFER_SIZE>>>>;

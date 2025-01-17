@@ -23,7 +23,6 @@ register_bitfields![u32,
         HUB_TIER5 OFFSET(20) NUMBITS(4) [],
         HUB_TIER6 OFFSET(24) NUMBITS(4) [],
         HUB_TIER7 OFFSET(28) NUMBITS(4) [],
-        HUB_TIER8 OFFSET(32) NUMBITS(4) [],
     ]
 ];
 
@@ -34,6 +33,10 @@ unsafe impl Send for RouteString {}
 unsafe impl Sync for RouteString {}
 
 impl RouteString {
+    pub fn new() -> Self {
+        Self(InMemoryRegister::new(0))
+    }
+
     pub fn append_port_number(&mut self, port_number: u8) {
         for i in 0..5 {
             if self.get_hub_tier(i) == 0 {

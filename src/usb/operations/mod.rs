@@ -1,15 +1,14 @@
 pub mod configurations;
 pub mod isoch;
-use core::fmt::Debug;
+use core::{cell::UnsafeCell, fmt::Debug};
 
 use alloc::sync::Arc;
-use async_lock::{Mutex, MutexGuardArc, OnceCell};
+use async_lock::{OnceCell, Semaphore};
 use bulk::BulkTransfer;
 use control::ControlTransfer;
 use interrupt::InterruptTransfer;
 use isoch::IsochTransfer;
 use num_derive::FromPrimitive;
-use num_traits::FromPrimitive;
 
 use crate::host::device::ConfigureSemaphore;
 
@@ -18,22 +17,22 @@ pub mod control;
 pub mod interrupt;
 
 #[derive(Default)]
-pub struct USBRequest {
+pub struct USBRequest<'a, const N: usize> {
     pub extra_action: ExtraAction,
     pub operation: RequestedOperation,
-    pub complete_action: CompleteAction,
+    pub complete_action: CompleteAction<'a, N>,
 }
 
-impl USBRequest {
+impl<'a, const N: usize> USBRequest<'a, N> {
     pub fn is_control(&self) -> bool {
         match self.operation {
-            RequestedOperation::Control(_, _) => true,
+            RequestedOperation::Control(_) => true,
             _ => false,
         }
     }
 }
 
-impl Debug for USBRequest {
+impl<'a, const N: usize> Debug for USBRequest<'a, N> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("USBRequest")
             .field("operation", &self.operation)
@@ -50,30 +49,34 @@ pub enum ExtraAction {
     KeepFill(ChannelNumber),
 }
 
-pub type CallbackFn = Arc<dyn FnOnce(RequestResult) + Send + Sync>;
-pub type CallbackValue = Arc<OnceCell<Result<RequestResult, usize>>>;
+pub type CallbackFn = Arc<dyn FnOnce(Result<RequestResult, u8>) + Send + Sync>;
+pub type CallbackValue = Arc<OnceCell<Result<RequestResult, u8>>>; //todo: change this into a oneshot channel
+pub type KeepCallbackValue<'a, const N: usize> =
+    async_ringbuf::AsyncStaticProd<'a, Result<RequestResult, u8>, N>;
 
 #[derive(Default)]
-pub enum CompleteAction {
+pub enum CompleteAction<'a, const N: usize> {
     #[default]
     NOOP,
     Callback(CallbackFn),
     SimpleResponse(CallbackValue),
+    KeepResponse(KeepCallbackValue<'a, N>),
+    DropSem(ConfigureSemaphore),
 }
 
 #[derive(Debug, Default)]
 pub enum RequestedOperation {
-    Control(ControlTransfer, ConfigureSemaphore),
+    Control(ControlTransfer),
     Bulk(BulkTransfer),
     Interrupt(InterruptTransfer),
     Isoch(IsochTransfer),
-    Assign(ConfigureSemaphore),
+    Assign,
     #[default]
     NOOP,
 }
 
 /// The direction of the data transfer.
-#[derive(Copy, Clone, Debug, Ord, PartialOrd, Eq, PartialEq, Hash, FromPrimitive)]
+#[derive(Copy, Clone, Debug, Ord, PartialOrd, Eq, PartialEq, Hash)]
 pub enum Direction {
     /// Out (Write Data)
     Out = 0,
@@ -82,7 +85,7 @@ pub enum Direction {
 }
 ///copy from xhci crate
 #[derive(Copy, Clone, Debug, Ord, PartialOrd, Eq, PartialEq, Hash, FromPrimitive)]
-#[repr(usize)]
+#[repr(u8)]
 pub enum RequestResult {
     /// Indicates that the Completion Code field has not been updated by the TRB producer.
     Invalid = 0,
@@ -175,8 +178,24 @@ pub enum RequestResult {
 }
 
 #[cfg(feature = "backend-xhci")]
-impl From<xhci::ring::trb::event::CompletionCode> for RequestResult {
-    fn from(value: xhci::ring::trb::event::CompletionCode) -> Self {
-        RequestResult::from_usize(value as usize).unwrap()
+mod xhci_impl {
+    use num_traits::FromPrimitive;
+    use xhci::ring::trb::transfer::Direction;
+
+    use super::RequestResult;
+
+    impl From<xhci::ring::trb::event::CompletionCode> for RequestResult {
+        fn from(value: xhci::ring::trb::event::CompletionCode) -> Self {
+            RequestResult::from_u8(value as u8).unwrap()
+        }
+    }
+
+    impl From<super::Direction> for Direction {
+        fn from(value: super::Direction) -> Self {
+            match value {
+                super::Direction::Out => Direction::Out,
+                super::Direction::In => Direction::In,
+            }
+        }
     }
 }

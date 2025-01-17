@@ -1,5 +1,4 @@
-use num_derive::FromPrimitive;
-
+use num_derive::{FromPrimitive, ToPrimitive};
 
 use super::{
     configurations::{AltnativeNumber, ConfigurationID, InterfaceNumber},
@@ -18,11 +17,19 @@ pub struct ControlTransfer {
 }
 
 #[allow(non_camel_case_types)]
-#[repr(u8)]
 #[derive(Debug, Clone)]
 pub enum bRequest {
     Standard(bRequestStandard),
     Spec(u8),
+}
+
+impl From<bRequest> for u8 {
+    fn from(value: bRequest) -> Self {
+        match value {
+            bRequest::Standard(b_request_standard) => b_request_standard as u8,
+            bRequest::Spec(a) => a,
+        }
+    }
 }
 
 #[allow(non_camel_case_types)]
