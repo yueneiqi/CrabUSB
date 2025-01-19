@@ -1,15 +1,12 @@
 ///host layer
-use alloc::{sync::Arc, vec::Vec};
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use async_lock::RwLock;
 
 use crate::abstractions::{PlatformAbstractions, USBSystemConfig};
 
 use super::device::USBDevice;
 
-#[cfg(feature = "backend-xhci")]
-mod xhci;
-
-pub trait Controller<O, const DEVICE_BUFFER_SIZE: usize>: Send
+pub trait Controller<'a, O, const DEVICE_BUFFER_SIZE: usize>: Send
 where
     O: PlatformAbstractions,
 {
@@ -19,81 +16,56 @@ where
 
     fn init(&self);
 
-    async fn probe(&self);
-
     /// each device should able to access actual transfer function in controller
-    fn device_accesses(&self) -> Arc<RwLock<Vec<USBDevice<DEVICE_BUFFER_SIZE>>>>;
+    fn device_accesses(&self) -> &Vec<Arc<USBDevice<'a, DEVICE_BUFFER_SIZE>>>;
 }
 
-// #[cfg(feature = "cotton-frontend")]
-// impl<T, O> cotton_usb_host::host_controller::HostController for T
-// where
-//     T: Controller<O>,
-//     O: PlatformAbstractions,
-// {
-//     type InterruptPipe;
+cfg_match! {
+    cfg(feature = "backend-xhci")=>{
+        mod xhci;
 
-//     type DeviceDetect;
+        pub fn initialize_controller<'a, O, const DEVICE_BUFFER_SIZE: usize>(
+            config: Arc<USBSystemConfig<O, DEVICE_BUFFER_SIZE>>,
+        ) -> Box<dyn Controller<'a, O, DEVICE_BUFFER_SIZE>>
+        where
+            O: PlatformAbstractions+'static,
+            'a:'static//wtf
+        {
+            Box::new(xhci::XHCIController::new(config))
+        }
+    }
+    _=>{
+        pub fn initialize_controller<'a, O, const DEVICE_BUFFER_SIZE: usize>(
+            config: Arc<USBSystemConfig<O, DEVICE_BUFFER_SIZE>>,
+        ) -> Box<dyn Controller<'a, O, DEVICE_BUFFER_SIZE>>
+        where
+            O: PlatformAbstractions+'static,
+            'a:'static//wtf
+        {
+            Box::new(DummyController::new(config))
+        }
+    }
+}
 
-//     fn device_detect(&self) -> Self::DeviceDetect {
-//         todo!()
-//     }
+struct DummyController;
 
-//     fn reset_root_port(&self, rst: bool) {
-//         todo!()
-//     }
+impl<'a, O, const DEVICE_BUFFER_SIZE: usize> Controller<'a, O, DEVICE_BUFFER_SIZE>
+    for DummyController
+where
+    O: PlatformAbstractions,
+{
+    fn new(_config: Arc<USBSystemConfig<O, DEVICE_BUFFER_SIZE>>) -> Self
+    where
+        Self: Sized,
+    {
+        panic!("dummy controller")
+    }
 
-//     fn control_transfer(
-//         &self,
-//         address: u8,
-//         packet_size: u8,
-//         setup: cotton_usb_host::wire::SetupPacket,
-//         data_phase: cotton_usb_host::usb_bus::DataPhase<'_>,
-//     ) -> impl core::future::Future<Output = Result<usize, cotton_usb_host::usb_bus::UsbError>> {
-//         todo!()
-//     }
+    fn init(&self) {
+        panic!("dummy controller")
+    }
 
-//     fn bulk_in_transfer(
-//         &self,
-//         address: u8,
-//         endpoint: u8,
-//         packet_size: u16,
-//         data: &mut [u8],
-//         transfer_type: cotton_usb_host::usb_bus::TransferType,
-//         data_toggle: &core::cell::Cell<bool>,
-//     ) -> impl core::future::Future<Output = Result<usize, cotton_usb_host::usb_bus::UsbError>> {
-//         todo!()
-//     }
-
-//     fn bulk_out_transfer(
-//         &self,
-//         address: u8,
-//         endpoint: u8,
-//         packet_size: u16,
-//         data: &[u8],
-//         transfer_type: cotton_usb_host::usb_bus::TransferType,
-//         data_toggle: &core::cell::Cell<bool>,
-//     ) -> impl core::future::Future<Output = Result<usize, cotton_usb_host::usb_bus::UsbError>> {
-//         todo!()
-//     }
-
-//     fn alloc_interrupt_pipe(
-//         &self,
-//         address: u8,
-//         endpoint: u8,
-//         max_packet_size: u16,
-//         interval_ms: u8,
-//     ) -> impl core::future::Future<Output = Self::InterruptPipe> {
-//         todo!()
-//     }
-
-//     fn try_alloc_interrupt_pipe(
-//         &self,
-//         address: u8,
-//         endpoint: u8,
-//         max_packet_size: u16,
-//         interval_ms: u8,
-//     ) -> Result<Self::InterruptPipe, cotton_usb_host::usb_bus::UsbError> {
-//         todo!()
-//     }
-// }
+    fn device_accesses(&self) -> &Vec<Arc<USBDevice<'a, DEVICE_BUFFER_SIZE>>> {
+        panic!("dummy controller")
+    }
+}

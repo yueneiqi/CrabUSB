@@ -1,7 +1,14 @@
+use core::mem;
+
 use alloc::{borrow::ToOwned, sync::Arc};
 
 use async_lock::{OnceCell, RwLock, Semaphore, SemaphoreGuardArc};
-use async_ringbuf::{traits::AsyncProducer, AsyncStaticProd};
+use async_ringbuf::{
+    traits::AsyncProducer,
+    wrap::{AsyncCons, AsyncProd},
+    AsyncRb, AsyncStaticProd, AsyncStaticRb,
+};
+use futures::FutureExt;
 use usb_descriptor_decoder::descriptors::topological_desc::TopologicalUSBDescriptorRoot;
 
 use crate::usb::{
@@ -14,12 +21,12 @@ use crate::usb::{
 
 pub struct USBDevice<'a, const BUFFER_SIZE: usize> {
     pub state: Arc<RwLock<DeviceState>>,
-    pub vendor_id: u16,
-    pub product_id: u16,
+    pub vendor_id: OnceCell<u16>,
+    pub product_id: OnceCell<u16>,
+    pub descriptor: OnceCell<Arc<TopologicalUSBDescriptorRoot>>,
     pub topology_path: RouteString,
-    pub descriptor: Arc<TopologicalUSBDescriptorRoot>,
     configure_sem: Arc<Semaphore>,
-    request_channel: RwLock<AsyncStaticProd<'a, USBRequest<'a, BUFFER_SIZE>, BUFFER_SIZE>>,
+    request_channel: RwLock<ArcAsyncRingBufPord<USBRequest<'a, BUFFER_SIZE>, BUFFER_SIZE>>,
 }
 
 pub enum DeviceState {
@@ -29,29 +36,35 @@ pub enum DeviceState {
     PreDrop, //for hot plug,  how to design drop all working functions mechanism?
 }
 
+pub type ArcAsyncRingBufPord<T, const N: usize> = async_ringbuf::wrap::AsyncWrap<
+    Arc<AsyncRb<ringbuf::storage::Owning<[mem::MaybeUninit<T>; N]>>>,
+    true,
+    false,
+>;
+pub type ArcAsyncRingBufCons<T, const N: usize> = async_ringbuf::wrap::AsyncWrap<
+    Arc<AsyncRb<ringbuf::storage::Owning<[mem::MaybeUninit<T>; N]>>>,
+    false,
+    true,
+>;
+
 #[derive(Debug)]
 pub struct ConfigureSemaphore(SemaphoreGuardArc);
 
 impl<'a, const BUFFER_SIZE: usize> USBDevice<'a, BUFFER_SIZE> {
-    pub fn new(
-        descriptor: Arc<TopologicalUSBDescriptorRoot>,
-        sender: AsyncStaticProd<'a, USBRequest<'a, BUFFER_SIZE>, BUFFER_SIZE>,
-    ) -> Result<Self, ()> {
-        Ok(USBDevice {
+    pub fn new(sender: ArcAsyncRingBufPord<USBRequest<'a, BUFFER_SIZE>, BUFFER_SIZE>) -> Self {
+        USBDevice {
             state: RwLock::new(DeviceState::Probed).into(),
-            vendor_id: descriptor.device.data.vendor,
-            product_id: descriptor.device.data.product_id,
-            descriptor,
+            vendor_id: OnceCell::new(),
+            product_id: OnceCell::new(),
+            descriptor: OnceCell::new(),
             request_channel: sender.into(),
             configure_sem: Semaphore::new(1).into(),
             topology_path: RouteString::new(),
-        })
+        }
     }
 
     pub fn acquire_cfg_sem(&self) -> Option<ConfigureSemaphore> {
-        self.configure_sem
-            .try_acquire_arc()
-            .map(ConfigureSemaphore)
+        self.configure_sem.try_acquire_arc().map(ConfigureSemaphore)
     }
 
     async fn post_usb_request(&self, request: USBRequest<'a, BUFFER_SIZE>) {
@@ -60,11 +73,17 @@ impl<'a, const BUFFER_SIZE: usize> USBDevice<'a, BUFFER_SIZE> {
             .await
             .push(request)
             .await
-            .unwrap_or_else(|_| panic!("device channel droped, wtf? vendor-{}|product-{}",
-                self.vendor_id, self.product_id))
+            .unwrap_or_else(|_| {
+                panic!(
+                    "device channel droped, wtf? vendor-{:?}|product-{:?}",
+                    self.vendor_id.get(),
+                    self.product_id.get()
+                )
+            })
     }
 
     pub async fn request_oneshot(&self, request: RequestedOperation) {
+        self.check_self_status().await;
         self.post_usb_request(USBRequest {
             operation: request,
             extra_action: ExtraAction::default(),
@@ -75,6 +94,7 @@ impl<'a, const BUFFER_SIZE: usize> USBDevice<'a, BUFFER_SIZE> {
 
     ///I must lost my mind...
     pub async fn request_once(&self, request: RequestedOperation) -> Result<RequestResult, u8> {
+        self.check_self_status().await;
         let cell = Arc::new(OnceCell::new());
         self.post_usb_request(USBRequest {
             extra_action: ExtraAction::NOOP,
@@ -92,6 +112,7 @@ impl<'a, const BUFFER_SIZE: usize> USBDevice<'a, BUFFER_SIZE> {
         callback: CallbackFn,
         channel_number: ChannelNumber,
     ) {
+        self.check_self_status().await;
         self.post_usb_request(USBRequest {
             extra_action: ExtraAction::KeepFill(channel_number),
             operation: request,
@@ -100,7 +121,19 @@ impl<'a, const BUFFER_SIZE: usize> USBDevice<'a, BUFFER_SIZE> {
         .await
     }
 
-    pub async fn request_assign(&self) -> &Self {
+    async fn check_self_status(&self) -> &Self {
+        match *self.state.read().await {
+            DeviceState::Probed => {
+                self.request_assign().await;
+            }
+            DeviceState::PreDrop => todo!(),
+            _ => (),
+        };
+
+        self
+    }
+
+    pub async fn request_assign(&self) {
         {
             let sem = self.configure_sem.acquire_arc().await;
             self.post_usb_request(USBRequest {
@@ -113,6 +146,5 @@ impl<'a, const BUFFER_SIZE: usize> USBDevice<'a, BUFFER_SIZE> {
 
         self.configure_sem.acquire().await;
         *self.state.write().await = DeviceState::Assigned;
-        self
     }
 }

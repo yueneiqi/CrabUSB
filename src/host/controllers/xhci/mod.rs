@@ -10,14 +10,14 @@ use alloc::{borrow::ToOwned, collections::btree_map::BTreeMap, sync::Arc, vec::V
 use async_lock::{OnceCell, RwLock};
 use async_ringbuf::{
     traits::{AsyncConsumer, AsyncProducer},
-    AsyncStaticCons,
+    AsyncRb, AsyncStaticCons, AsyncStaticRb,
 };
 use axhid::hidreport::hid::Item;
 use context::{DeviceContextList, ScratchpadBufferArray};
 use event_ring::EventRing;
 use log::{debug, error, info, trace, warn};
 use ring::Ring;
-use ringbuf::traits::Consumer;
+use ringbuf::traits::{Consumer, Split};
 use xhci::{
     accessor::Mapper,
     extended_capabilities::XhciSupportedProtocol,
@@ -30,7 +30,7 @@ use xhci::{
 
 use crate::{
     abstractions::{PlatformAbstractions, USBSystemConfig},
-    host::device::USBDevice,
+    host::device::{ArcAsyncRingBufCons, USBDevice},
     usb::operations::{
         control::ControlTransfer, CompleteAction, Direction, RequestResult, USBRequest,
     },
@@ -58,8 +58,8 @@ impl Mapper for MemMapper {
 }
 
 pub struct Receiver<'a, const RINGBUF_SIZE: usize> {
-    pub slot: u8,
-    pub receiver: AsyncStaticCons<'a, USBRequest<'a, RINGBUF_SIZE>, RINGBUF_SIZE>,
+    pub slot: OnceCell<u8>,
+    pub receiver: ArcAsyncRingBufCons<USBRequest<'a, RINGBUF_SIZE>, RINGBUF_SIZE>,
 }
 
 pub struct XHCIController<'a, O, const RINGBUF_SIZE: usize>
@@ -78,7 +78,7 @@ where
     cmd: Ring<O>,
     event: EventRing<O>,
     dev_ctx: RwLock<DeviceContextList<O, RINGBUF_SIZE>>,
-    devices: Vec<Arc<USBDevice<'a, RINGBUF_SIZE>>>,
+    devices: UnsafeCell<Vec<Arc<USBDevice<'a, RINGBUF_SIZE>>>>,
     requests: UnsafeCell<Vec<Receiver<'a, RINGBUF_SIZE>>>,
     finish_jobs: RwLock<BTreeMap<usize, CompleteAction<'a, RINGBUF_SIZE>>>,
     extra_works: BTreeMap<usize, USBRequest<'a, RINGBUF_SIZE>>,
@@ -284,6 +284,42 @@ where
         self
     }
 
+    fn initial_probe(&self) -> &Self {
+        for (i, port) in unsafe { self.regs.get().as_mut_unchecked() }
+            .port_register_set
+            .into_iter() //safety: checked, is read_volatile
+            .enumerate()
+        {
+            let portsc = port.portsc;
+            info!(
+                "{TAG} Port {}: Enabled: {}, Connected: {}, Speed {}, Power {}",
+                i,
+                portsc.port_enabled_disabled(),
+                portsc.current_connect_status(),
+                portsc.port_speed(),
+                portsc.port_power()
+            );
+
+            if !portsc.current_connect_status() {
+                // warn!("port {i} connected, but not enabled!");
+                continue;
+            }
+
+            {
+                use async_ringbuf::{traits::*, AsyncStaticRb};
+                let (prod, cons) =
+                    AsyncStaticRb::<USBRequest<'a, RINGBUF_SIZE>, RINGBUF_SIZE>::default().split();
+
+                unsafe { self.devices.get().as_mut_unchecked() }.push(USBDevice::new(prod).into());
+                unsafe { self.requests.get().as_mut_unchecked() }.push(Receiver {
+                    slot: OnceCell::new(),
+                    receiver: cons,
+                });
+            }
+        }
+        self
+    }
+
     fn start(&self) -> &Self {
         let regs = unsafe { self.regs.get().as_mut_unchecked() };
         debug!("{TAG} Start run");
@@ -401,7 +437,7 @@ where
                             // });had size issue, to solve.
                         }
                         CompleteAction::SimpleResponse(once_cell) => {
-                            once_cell
+                            let _ = once_cell
                                 .set(code.map(|a| a.into()).map_err(|a| a as _))
                                 .await;
                         }
@@ -432,7 +468,7 @@ where
             self.requests.get().read_volatile().iter_mut().map(|r| {
                 r.receiver
                     .pop()
-                    .map(|res| res.map(|req| (req, r.slot)))
+                    .map(|res| res.map(|req| (req, r.slot.get_unchecked().clone())))
                     .into_stream()
             })
         })
@@ -543,12 +579,12 @@ where
     }
 }
 
-impl<O, const _DEVICE_REQUEST_BUFFER_SIZE: usize> Controller<O, _DEVICE_REQUEST_BUFFER_SIZE>
-    for XHCIController<'_, O, _DEVICE_REQUEST_BUFFER_SIZE>
+impl<'a, O, const RINGBUF_SIZE: usize> Controller<'a, O, RINGBUF_SIZE>
+    for XHCIController<'a, O, RINGBUF_SIZE>
 where
     O: PlatformAbstractions,
 {
-    fn new(config: Arc<USBSystemConfig<O, _DEVICE_REQUEST_BUFFER_SIZE>>) -> Self
+    fn new(config: Arc<USBSystemConfig<O, RINGBUF_SIZE>>) -> Self
     where
         Self: Sized,
     {
@@ -594,7 +630,7 @@ where
                 cmd,
                 event,
                 dev_ctx: dev_ctx.into(),
-                devices: Vec::new(),
+                devices: Vec::new().into(),
                 finish_jobs: BTreeMap::new().into(),
                 requests: UnsafeCell::new(Vec::new()), //safety: only controller itself could fetch, all acccess via run_once
                 extra_works: BTreeMap::new(),
@@ -609,16 +645,11 @@ where
             .set_cmd_ring()
             .init_ir()
             .setup_scratchpads()
-            .start();
+            .start()
+            .initial_probe();
     }
 
-    async fn probe(&self) {
-        todo!()
-    }
-
-    fn device_accesses(
-        &self,
-    ) -> Arc<async_lock::RwLock<Vec<USBDevice<_DEVICE_REQUEST_BUFFER_SIZE>>>> {
-        todo!()
+    fn device_accesses(&self) -> &Vec<Arc<USBDevice<'a, RINGBUF_SIZE>>> {
+        unsafe { self.devices.get().as_ref_unchecked() }
     }
 }
