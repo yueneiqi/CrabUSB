@@ -9,13 +9,14 @@ pub trait PlatformAbstractions: Clone + Send + Sync + Sized {
     type PhysAddr: Into<Self::VirtAddr> + From<usize> + Into<usize> + Clone + Send + Sync;
     type DMA: Allocator + Send + Sync + Clone;
     const PAGE_SIZE: usize;
+    const RING_BUFFER_SIZE: usize;
     fn dma_alloc(&self) -> Self::DMA;
 }
 
 pub type InterruptRegister = dyn Fn(dyn Fn()) + Send + Sync;
 
 #[derive(Clone)]
-pub struct USBSystemConfig<O, const DEVICE_REQUEST_BUFFER_SIZE: usize>
+pub struct USBSystemConfig<O>
 where
     O: PlatformAbstractions,
 {

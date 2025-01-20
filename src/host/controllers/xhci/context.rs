@@ -1,4 +1,4 @@
-use core::cell::UnsafeCell;
+use core::cell::{SyncUnsafeCell, UnsafeCell};
 use core::usize;
 
 use crate::abstractions::dma::DMA;
@@ -19,8 +19,8 @@ pub struct DeviceContextList<O, const _DEVICE_REQUEST_BUFFER_SIZE: usize>
 where
     O: PlatformAbstractions,
 {
-    config: Arc<USBSystemConfig<O, _DEVICE_REQUEST_BUFFER_SIZE>>,
-    pub dcbaa: UnsafeCell<DMA<[u64; 256], O::DMA>>,
+    config: Arc<USBSystemConfig<O>>,
+    pub dcbaa: SyncUnsafeCell<DMA<[u64; 256], O::DMA>>,
     pub device_ctx_inners: BTreeMap<usize, DeviceCtxInner<O>>,
 }
 
@@ -37,7 +37,7 @@ impl<O, const _DEVICE_REQUEST_BUFFER_SIZE: usize> DeviceContextList<O, _DEVICE_R
 where
     O: PlatformAbstractions,
 {
-    pub fn new(cfg: Arc<USBSystemConfig<O, _DEVICE_REQUEST_BUFFER_SIZE>>) -> Self {
+    pub fn new(cfg: Arc<USBSystemConfig<O>>) -> Self {
         Self {
             config: cfg.clone(),
             dcbaa: DMA::new([0u64; 256], 4096, cfg.os.dma_alloc()).into(),
@@ -49,11 +49,7 @@ where
         unsafe { self.dcbaa.get().read_volatile() }.as_ptr() as _
     }
 
-    pub fn write_transfer_ring(
-        &mut self,
-        slot: u8,
-        channel: usize,
-    ) -> Option<&mut Ring<O>> {
+    pub fn write_transfer_ring(&mut self, slot: u8, channel: usize) -> Option<&mut Ring<O>> {
         self.device_ctx_inners
             .get_mut(&(slot as _))?
             .transfer_rings

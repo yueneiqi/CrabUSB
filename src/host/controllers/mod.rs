@@ -1,43 +1,51 @@
 ///host layer
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use async_lock::RwLock;
+use controller_events::EventHandler;
 
 use crate::abstractions::{PlatformAbstractions, USBSystemConfig};
 
 use super::device::USBDevice;
 
-pub trait Controller<'a, O, const DEVICE_BUFFER_SIZE: usize>: Send
+pub mod controller_events;
+
+pub trait Controller<'a, O>: Send + Sync
 where
     O: PlatformAbstractions,
+    [(); O::RING_BUFFER_SIZE]:,
 {
-    fn new(config: Arc<USBSystemConfig<O, DEVICE_BUFFER_SIZE>>) -> Self
+    fn new(config: Arc<USBSystemConfig<O>>) -> Self
     where
         Self: Sized;
 
     fn init(&self);
 
     /// each device should able to access actual transfer function in controller
-    fn device_accesses(&self) -> &Vec<Arc<USBDevice<'a, DEVICE_BUFFER_SIZE>>>;
+    fn device_accesses(&self) -> &Vec<Arc<USBDevice<'a, { O::RING_BUFFER_SIZE }>>>;
+
+    fn register_event_handler(&self, register: EventHandler<'a, O>) {}
 }
 
 cfg_match! {
     cfg(feature = "backend-xhci")=>{
         mod xhci;
 
-        pub fn initialize_controller<'a, O, const DEVICE_BUFFER_SIZE: usize>(
-            config: Arc<USBSystemConfig<O, DEVICE_BUFFER_SIZE>>,
-        ) -> Box<dyn Controller<'a, O, DEVICE_BUFFER_SIZE>>
+        pub fn initialize_controller<'a, O>(
+            config: Arc<USBSystemConfig<O>>,
+        ) -> Box<dyn Controller<'a, O>>
         where
+        //wtf
             O: PlatformAbstractions+'static,
-            'a:'static//wtf
+            'a:'static,
+             [(); O::RING_BUFFER_SIZE]:
         {
             Box::new(xhci::XHCIController::new(config))
         }
     }
     _=>{
-        pub fn initialize_controller<'a, O, const DEVICE_BUFFER_SIZE: usize>(
-            config: Arc<USBSystemConfig<O, DEVICE_BUFFER_SIZE>>,
-        ) -> Box<dyn Controller<'a, O, DEVICE_BUFFER_SIZE>>
+        pub fn initialize_controller<'a, O>(
+            config: Arc<USBSystemConfig<O>>,
+        ) -> Box<dyn Controller<'a, O>>
         where
             O: PlatformAbstractions+'static,
             'a:'static//wtf
@@ -49,12 +57,12 @@ cfg_match! {
 
 struct DummyController;
 
-impl<'a, O, const DEVICE_BUFFER_SIZE: usize> Controller<'a, O, DEVICE_BUFFER_SIZE>
-    for DummyController
+impl<'a, O> Controller<'a, O> for DummyController
 where
     O: PlatformAbstractions,
+    [(); O::RING_BUFFER_SIZE]:,
 {
-    fn new(_config: Arc<USBSystemConfig<O, DEVICE_BUFFER_SIZE>>) -> Self
+    fn new(_config: Arc<USBSystemConfig<O>>) -> Self
     where
         Self: Sized,
     {
@@ -65,7 +73,7 @@ where
         panic!("dummy controller")
     }
 
-    fn device_accesses(&self) -> &Vec<Arc<USBDevice<'a, DEVICE_BUFFER_SIZE>>> {
+    fn device_accesses(&self) -> &Vec<Arc<USBDevice<'a, { O::RING_BUFFER_SIZE }>>> {
         panic!("dummy controller")
     }
 }

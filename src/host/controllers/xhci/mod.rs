@@ -1,5 +1,6 @@
 use core::{
-    cell::UnsafeCell,
+    cell::{SyncUnsafeCell, UnsafeCell},
+    future::IntoFuture,
     mem,
     num::NonZeroUsize,
     sync::atomic::{fence, Ordering},
@@ -36,7 +37,10 @@ use crate::{
     },
 };
 
-use super::Controller;
+use super::{
+    controller_events::{DeviceEventHandler, EventHandlerTable},
+    Controller,
+};
 
 mod context;
 mod event_ring;
@@ -66,10 +70,11 @@ pub struct XHCIController<'a, O, const RINGBUF_SIZE: usize>
 //had to poll controller it self!
 where
     O: PlatformAbstractions,
+    [(); O::RING_BUFFER_SIZE]:,
 {
-    config: Arc<USBSystemConfig<O, RINGBUF_SIZE>>,
+    config: Arc<USBSystemConfig<O>>,
     //safety:regs MUST exist in mem otherwise would panic when construct
-    regs: UnsafeCell<RegistersBase>,
+    regs: SyncUnsafeCell<RegistersBase>,
     ext_list: Option<RegistersExtList>,
     max_slots: u8,
     max_ports: u8,
@@ -78,15 +83,17 @@ where
     cmd: Ring<O>,
     event: EventRing<O>,
     dev_ctx: RwLock<DeviceContextList<O, RINGBUF_SIZE>>,
-    devices: UnsafeCell<Vec<Arc<USBDevice<'a, RINGBUF_SIZE>>>>,
-    requests: UnsafeCell<Vec<Receiver<'a, RINGBUF_SIZE>>>,
+    devices: SyncUnsafeCell<Vec<Arc<USBDevice<'a, RINGBUF_SIZE>>>>,
+    requests: SyncUnsafeCell<Vec<Receiver<'a, RINGBUF_SIZE>>>,
     finish_jobs: RwLock<BTreeMap<usize, CompleteAction<'a, RINGBUF_SIZE>>>,
     extra_works: BTreeMap<usize, USBRequest<'a, RINGBUF_SIZE>>,
+    event_tables: RwLock<EventHandlerTable<'a, O>>,
 }
 
 impl<'a, O, const RINGBUF_SIZE: usize> XHCIController<'a, O, RINGBUF_SIZE>
 where
     O: PlatformAbstractions,
+    [(); O::RING_BUFFER_SIZE]:,
 {
     fn chip_hardware_reset(&self) -> &Self {
         debug!("{TAG} Reset begin");
@@ -317,6 +324,7 @@ where
                 });
             }
         }
+
         self
     }
 
@@ -579,12 +587,11 @@ where
     }
 }
 
-impl<'a, O, const RINGBUF_SIZE: usize> Controller<'a, O, RINGBUF_SIZE>
-    for XHCIController<'a, O, RINGBUF_SIZE>
+impl<'a, O> Controller<'a, O> for XHCIController<'a, O, { O::RING_BUFFER_SIZE }>
 where
     O: PlatformAbstractions,
 {
-    fn new(config: Arc<USBSystemConfig<O, RINGBUF_SIZE>>) -> Self
+    fn new(config: Arc<USBSystemConfig<O>>) -> Self
     where
         Self: Sized,
     {
@@ -632,8 +639,9 @@ where
                 dev_ctx: dev_ctx.into(),
                 devices: Vec::new().into(),
                 finish_jobs: BTreeMap::new().into(),
-                requests: UnsafeCell::new(Vec::new()), //safety: only controller itself could fetch, all acccess via run_once
+                requests: Vec::new().into(), //safety: only controller itself could fetch, all acccess via run_once
                 extra_works: BTreeMap::new(),
+                event_tables: EventHandlerTable::new().into(),
             }
         }
     }
@@ -649,7 +657,14 @@ where
             .initial_probe();
     }
 
-    fn device_accesses(&self) -> &Vec<Arc<USBDevice<'a, RINGBUF_SIZE>>> {
+    fn device_accesses(&self) -> &Vec<Arc<USBDevice<'a, { O::RING_BUFFER_SIZE }>>> {
         unsafe { self.devices.get().as_ref_unchecked() }
+    }
+
+    fn register_event_handler(&self, handler: super::controller_events::EventHandler<'a, O>) {
+        while let Some(mut writer) = self.event_tables.try_write() {
+            writer.register(handler);
+            return;
+        }
     }
 }

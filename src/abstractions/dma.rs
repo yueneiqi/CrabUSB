@@ -16,6 +16,13 @@ where
     __marker: PhantomData<T>,
 }
 
+unsafe impl<T, A> Sync for DMA<T, A>
+where
+    T: ?Sized,
+    A: Allocator,
+{
+}
+
 unsafe impl<T, A> Send for DMA<T, A>
 where
     T: ?Sized,
