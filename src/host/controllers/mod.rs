@@ -1,6 +1,5 @@
 ///host layer
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
-use async_lock::RwLock;
 use controller_events::EventHandler;
 
 use crate::abstractions::{PlatformAbstractions, USBSystemConfig};

@@ -3,11 +3,7 @@ use core::mem;
 use alloc::{borrow::ToOwned, sync::Arc};
 
 use async_lock::{OnceCell, RwLock, Semaphore, SemaphoreGuardArc};
-use async_ringbuf::{
-    traits::AsyncProducer,
-    wrap::{AsyncCons, AsyncProd},
-    AsyncRb, AsyncStaticProd, AsyncStaticRb,
-};
+use async_ringbuf::{traits::AsyncProducer, AsyncRb};
 use futures::FutureExt;
 use usb_descriptor_decoder::descriptors::topological_desc::TopologicalUSBDescriptorRoot;
 

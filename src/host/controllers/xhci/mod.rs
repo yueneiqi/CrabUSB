@@ -1,6 +1,5 @@
 use core::{
-    cell::{SyncUnsafeCell, UnsafeCell},
-    future::IntoFuture,
+    cell::SyncUnsafeCell,
     mem,
     num::NonZeroUsize,
     sync::atomic::{fence, Ordering},
@@ -9,12 +8,10 @@ use core::{
 use ::futures::{stream, FutureExt, StreamExt};
 use alloc::{borrow::ToOwned, collections::btree_map::BTreeMap, sync::Arc, vec::Vec};
 use async_lock::{OnceCell, RwLock};
-use async_ringbuf::{
-    traits::{AsyncConsumer, AsyncProducer},
-    AsyncRb, AsyncStaticCons, AsyncStaticRb,
-};
+use async_ringbuf::traits::{AsyncConsumer, AsyncProducer};
 use axhid::hidreport::hid::Item;
 use context::{DeviceContextList, ScratchpadBufferArray};
+use embassy_futures::block_on;
 use event_ring::EventRing;
 use log::{debug, error, info, trace, warn};
 use ring::Ring;
@@ -37,10 +34,7 @@ use crate::{
     },
 };
 
-use super::{
-    controller_events::{DeviceEventHandler, EventHandlerTable},
-    Controller,
-};
+use super::{controller_events::EventHandlerTable, Controller};
 
 mod context;
 mod event_ring;
@@ -226,7 +220,7 @@ where
         self
     }
 
-    fn setup_scratchpads(&self) -> &Self {
+    async fn setup_scratchpads(&self) -> &Self {
         let scratchpad_buf_arr = {
             let buf_count = {
                 let count = unsafe { self.regs.get().as_mut_unchecked() }
@@ -263,7 +257,7 @@ where
             scratchpad_buf_arr
         };
 
-        self.scratchpad_buf_arr.set(scratchpad_buf_arr);
+        self.scratchpad_buf_arr.set(scratchpad_buf_arr).await;
         self
     }
 
@@ -476,7 +470,7 @@ where
             self.requests.get().read_volatile().iter_mut().map(|r| {
                 r.receiver
                     .pop()
-                    .map(|res| res.map(|req| (req, r.slot.get_unchecked().clone())))
+                    .map(|res| res.map(|req| (req, *r.slot.get_unchecked())))
                     .into_stream()
             })
         })
@@ -647,14 +641,17 @@ where
     }
 
     fn init(&self) {
-        self.chip_hardware_reset()
-            .set_max_device_slots()
-            .set_dcbaap()
-            .set_cmd_ring()
-            .init_ir()
-            .setup_scratchpads()
-            .start()
-            .initial_probe();
+        block_on(
+            //safety: no need for reschedule, set() on Oncecell should complete instantly
+            self.chip_hardware_reset()
+                .set_max_device_slots()
+                .set_dcbaap()
+                .set_cmd_ring()
+                .init_ir()
+                .setup_scratchpads(),
+        )
+        .start()
+        .initial_probe();
     }
 
     fn device_accesses(&self) -> &Vec<Arc<USBDevice<'a, { O::RING_BUFFER_SIZE }>>> {

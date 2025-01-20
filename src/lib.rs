@@ -14,7 +14,7 @@
 use abstractions::{PlatformAbstractions, USBSystemConfig};
 use alloc::{boxed::Box, collections::btree_map::BTreeMap, string::String, sync::Arc, vec::Vec};
 use driver::driverapi::USBSystemDriverModule;
-use futures::{future::join_all, stream, FutureExt};
+use futures::{future::join_all, FutureExt};
 use host::controllers::{controller_events::EventHandler, Controller};
 
 extern crate alloc;

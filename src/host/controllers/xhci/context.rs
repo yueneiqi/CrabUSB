@@ -1,4 +1,4 @@
-use core::cell::{SyncUnsafeCell, UnsafeCell};
+use core::cell::SyncUnsafeCell;
 use core::usize;
 
 use crate::abstractions::dma::DMA;
