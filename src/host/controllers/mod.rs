@@ -22,7 +22,7 @@ where
     /// each device should able to access actual transfer function in controller
     fn device_accesses(&self) -> &Vec<Arc<USBDevice<'a, { O::RING_BUFFER_SIZE }>>>;
 
-    fn register_event_handler(&self, register: EventHandler<'a, O>) {}
+    fn register_event_handler(&self, register: EventHandler<'a, O>);
 }
 
 cfg_match! {
@@ -73,6 +73,10 @@ where
     }
 
     fn device_accesses(&self) -> &Vec<Arc<USBDevice<'a, { O::RING_BUFFER_SIZE }>>> {
+        panic!("dummy controller")
+    }
+
+    fn register_event_handler(&self, register: EventHandler<'a, O>) {
         panic!("dummy controller")
     }
 }

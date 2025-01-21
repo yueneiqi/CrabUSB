@@ -1,13 +1,18 @@
 use core::{
     cell::SyncUnsafeCell,
+    iter::Once,
     mem,
     num::NonZeroUsize,
+    ops::DerefMut,
     sync::atomic::{fence, Ordering},
 };
 
 use ::futures::{stream, FutureExt, StreamExt};
-use alloc::{borrow::ToOwned, collections::btree_map::BTreeMap, sync::Arc, vec::Vec};
-use async_lock::{OnceCell, RwLock};
+use alloc::{
+    borrow::ToOwned, collections::btree_map::BTreeMap, format, string::ToString, sync::Arc,
+    vec::Vec,
+};
+use async_lock::{Mutex, OnceCell, RwLock};
 use async_ringbuf::traits::{AsyncConsumer, AsyncProducer};
 use axhid::hidreport::hid::Item;
 use context::{DeviceContextList, ScratchpadBufferArray};
@@ -18,10 +23,11 @@ use ring::Ring;
 use ringbuf::traits::{Consumer, Split};
 use xhci::{
     accessor::Mapper,
+    context::{Input, InputHandler},
     extended_capabilities::XhciSupportedProtocol,
     ring::trb::{
-        command,
-        event::{self, CompletionCode},
+        command::{self, AddressDevice},
+        event::{self, CommandCompletion, CompletionCode},
         transfer::{self, TransferType},
     },
 };
@@ -74,7 +80,7 @@ where
     max_ports: u8,
     max_irqs: u16,
     scratchpad_buf_arr: OnceCell<ScratchpadBufferArray<O>>,
-    cmd: Ring<O>,
+    cmd: Mutex<Ring<O>>,
     event: EventRing<O>,
     dev_ctx: RwLock<DeviceContextList<O, RINGBUF_SIZE>>,
     devices: SyncUnsafeCell<Vec<Arc<USBDevice<'a, RINGBUF_SIZE>>>>,
@@ -161,8 +167,12 @@ where
     }
 
     fn set_cmd_ring(&self) -> &Self {
-        let crcr = self.cmd.register();
-        let cycle = self.cmd.cycle;
+        let ring = self
+            .cmd
+            .try_lock()
+            .expect("should gurantee exclusive access while initialize");
+        let crcr = ring.register();
+        let cycle = ring.cycle;
 
         debug!("{TAG} Writing CRCR: {:X}", crcr);
         unsafe { self.regs.get().as_mut_unchecked() }
@@ -257,7 +267,7 @@ where
             scratchpad_buf_arr
         };
 
-        self.scratchpad_buf_arr.set(scratchpad_buf_arr).await;
+        let _ = self.scratchpad_buf_arr.set(scratchpad_buf_arr).await;
         self
     }
 
@@ -286,7 +296,7 @@ where
     }
 
     fn initial_probe(&self) -> &Self {
-        for (i, port) in unsafe { self.regs.get().as_mut_unchecked() }
+        for (port_id, port) in unsafe { self.regs.get().as_mut_unchecked() }
             .port_register_set
             .into_iter() //safety: checked, is read_volatile
             .enumerate()
@@ -294,7 +304,7 @@ where
             let portsc = port.portsc;
             info!(
                 "{TAG} Port {}: Enabled: {}, Connected: {}, Speed {}, Power {}",
-                i,
+                port_id,
                 portsc.port_enabled_disabled(),
                 portsc.current_connect_status(),
                 portsc.port_speed(),
@@ -311,7 +321,16 @@ where
                 let (prod, cons) =
                     AsyncStaticRb::<USBRequest<'a, RINGBUF_SIZE>, RINGBUF_SIZE>::default().split();
 
-                unsafe { self.devices.get().as_mut_unchecked() }.push(USBDevice::new(prod).into());
+                unsafe { self.devices.get().as_mut_unchecked() }.push(
+                    {
+                        let mut usbdevice = USBDevice::new(prod);
+                        usbdevice
+                            .topology_path
+                            .append_port_number((port_id + 1) as _);
+                        usbdevice
+                    }
+                    .into(),
+                );
                 unsafe { self.requests.get().as_mut_unchecked() }.push(Receiver {
                     slot: OnceCell::new(),
                     receiver: cons,
@@ -373,8 +392,8 @@ where
             });
     }
 
-    async fn post_cmd(&mut self, trb: command::Allowed) -> Result<RequestResult, u8> {
-        let addr = self.cmd.enque_command(trb);
+    async fn post_command(&self, trb: command::Allowed) -> Result<RequestResult, u8> {
+        let addr = self.cmd.lock().await.enque_command(trb);
         let cell = Arc::new(OnceCell::new());
 
         self.finish_jobs
@@ -388,6 +407,14 @@ where
         cell.wait().await.to_owned()
     }
 
+    fn get_speed(&self, port: u8) -> u8 {
+        unsafe { self.regs.get().as_mut_unchecked() }
+            .port_register_set
+            .read_volatile_at(port as _)
+            .portsc
+            .port_speed()
+    }
+
     #[allow(unused_variables)]
     async fn on_event_arrived(&mut self) {
         while let Some((event, cycle)) = self.event.next() {
@@ -398,14 +425,18 @@ where
                     let addr = transfer_event.trb_pointer() as _;
                     //todo: transfer event trb had extra info compare to command event., should we split these two?
 
-                    self.mark_completed(transfer_event.completion_code(), addr)
+                    self.mark_completed(transfer_event.completion_code(), addr, None)
                         .await;
                 }
                 event::Allowed::CommandCompletion(command_completion) => {
                     let addr = command_completion.command_trb_pointer() as _;
 
-                    self.mark_completed(command_completion.completion_code(), addr)
-                        .await;
+                    self.mark_completed(
+                        command_completion.completion_code(),
+                        addr,
+                        Some(command_completion),
+                    )
+                    .await;
                 }
                 event::Allowed::PortStatusChange(port_status_change) => {
                     warn!("{TAG} port status changed! {:#?}", port_status_change);
@@ -421,7 +452,12 @@ where
         self.update_erdp();
     }
 
-    async fn mark_completed(&mut self, code: Result<CompletionCode, u8>, addr: usize) {
+    async fn mark_completed(
+        &mut self,
+        code: Result<CompletionCode, u8>,
+        addr: usize,
+        dirty_hack_for_command: Option<CommandCompletion>, //ewwwwww, should consider how to improve it
+    ) {
         //should compile to jump table?
         if self.finish_jobs.read().await.contains_key(&addr) {
             self.finish_jobs
@@ -439,9 +475,15 @@ where
                             // });had size issue, to solve.
                         }
                         CompleteAction::SimpleResponse(once_cell) => {
-                            let _ = once_cell
-                                .set(code.map(|a| a.into()).map_err(|a| a as _))
-                                .await;
+                            if let Some(completion) = dirty_hack_for_command
+                                && code.is_ok_and(|ok| ok == CompletionCode::Success)
+                            {
+                                let _ = once_cell.set(Err(completion.slot_id())).await;
+                            } else {
+                                let _ = once_cell
+                                    .set(code.map(|a| a.into()).map_err(|a| a as _))
+                                    .await;
+                            }
                         }
                         CompleteAction::DropSem(configure_semaphore) => {
                             drop(configure_semaphore);
@@ -470,7 +512,7 @@ where
             self.requests.get().read_volatile().iter_mut().map(|r| {
                 r.receiver
                     .pop()
-                    .map(|res| res.map(|req| (req, *r.slot.get_unchecked())))
+                    .map(|res| res.map(|req| (req, &r.slot)))
                     .into_stream()
             })
         })
@@ -480,10 +522,12 @@ where
     }
 
     #[allow(unused_variables)]
-    async fn post_transfer(&self, req: USBRequest<'a, RINGBUF_SIZE>, slot: u8) {
+    async fn post_transfer(&self, req: USBRequest<'a, RINGBUF_SIZE>, slot: &OnceCell<u8>) {
         match req.operation {
             crate::usb::operations::RequestedOperation::Control(control_transfer) => {
-                let key = self.control_transfer(slot, control_transfer).await;
+                let key = self
+                    .control_transfer(unsafe { slot.get_unchecked() }.clone(), control_transfer)
+                    .await;
                 self.finish_jobs
                     .write()
                     .await
@@ -492,14 +536,142 @@ where
             crate::usb::operations::RequestedOperation::Bulk(bulk_transfer) => todo!(),
             crate::usb::operations::RequestedOperation::Interrupt(interrupt_transfer) => todo!(),
             crate::usb::operations::RequestedOperation::Isoch(isoch_transfer) => todo!(),
-            crate::usb::operations::RequestedOperation::Assign => todo!(),
+            crate::usb::operations::RequestedOperation::Assign_Address(route) => {
+                let dev = unsafe { self.devices.get().as_ref_unchecked() }
+                    .iter()
+                    .find(|dev| dev.topology_path == route)
+                    .expect(
+                        format!(
+                            "want assign a new device, but such device with route {} notfound",
+                            route
+                        )
+                        .as_str(),
+                    );
+                self.assign_address_device(dev).await;
+                if let CompleteAction::DropSem(sem) = req.complete_action {
+                    drop(sem);
+                } else {
+                    todo!("restruct urb system in xhci!")
+                }
+            }
             crate::usb::operations::RequestedOperation::NOOP => {
-                debug!("{TAG}-device {slot} transfer nope!")
+                debug!("{TAG}-device {:#?} transfer nope!", slot)
+                //requestblock, in xhci, had additional request type "command request, thus we should create another URB but not just use USBRequest!"
+                //TODO: enum XHCIRequest
+            }
+        }
+    }
+    async fn assign_address_device(&self, device: &Arc<USBDevice<'a, RINGBUF_SIZE>>) {
+        const CONTROL_DCI: usize = 1;
+
+        let slot_id = self.enable_slot().await;
+        debug!("slot id acquired! {slot_id} for {}", device.topology_path);
+        let _ = device.slot_id.set(slot_id).await;
+
+        self.dev_ctx.write().await.new_slot(slot_id, 32); //TODO: basically, now a days all usb device  should had 32 endpoints, but for now let's just hardcode it...
+        let port_speed = self.get_speed(device.topology_path.get_hub_index_at_tier(0));
+        let default_max_packet_size = parse_default_max_packet_size_from_speed(port_speed);
+        let context_addr = {
+            let (control_channel_addr, cycle_bit) = {
+                let _temp = self.dev_ctx.read().await;
+                let ring = _temp.read_transfer_ring(slot_id, CONTROL_DCI).unwrap();
+                (ring.register(), ring.cycle)
+            };
+
+            let mut writer = self.dev_ctx.write().await;
+            let context_mut = writer
+                .device_ctx_inners
+                .get_mut(&slot_id)
+                .unwrap()
+                .in_ctx
+                .deref_mut();
+
+            let control_context = context_mut.control_mut();
+            control_context.set_add_context_flag(0);
+            control_context.set_add_context_flag(1);
+            for i in 2..32 {
+                control_context.clear_drop_context_flag(i);
+            }
+
+            let slot_context = context_mut.device_mut().slot_mut();
+            slot_context.clear_multi_tt();
+            slot_context.clear_hub();
+            slot_context.set_route_string({
+                let rs = device.topology_path.route_string();
+                assert_eq!(rs, 0); // for now, not support more hub ,so hardcode as 0.//TODO: generate route string
+                rs
+            });
+            slot_context.set_context_entries(1);
+            slot_context.set_max_exit_latency(0);
+            slot_context.set_root_hub_port_number(device.topology_path.port_number()); // use port number
+            slot_context.set_number_of_ports(0);
+            slot_context.set_parent_hub_slot_id(0);
+            slot_context.set_tt_think_time(0);
+            slot_context.set_interrupter_target(0);
+            slot_context.set_speed(port_speed);
+
+            let endpoint_0 = context_mut.device_mut().endpoint_mut(CONTROL_DCI);
+            endpoint_0.set_endpoint_type(xhci::context::EndpointType::Control);
+            endpoint_0.set_max_packet_size(default_max_packet_size);
+            endpoint_0.set_max_burst_size(0);
+            endpoint_0.set_error_count(3);
+            endpoint_0.set_tr_dequeue_pointer(control_channel_addr);
+            if cycle_bit {
+                endpoint_0.set_dequeue_cycle_state();
+            } else {
+                endpoint_0.clear_dequeue_cycle_state();
+            }
+            endpoint_0.set_interval(0);
+            endpoint_0.set_max_primary_streams(0);
+            endpoint_0.set_mult(0);
+            endpoint_0.set_error_count(3);
+
+            (context_mut as *const Input<16>).addr() as u64
+        };
+        fence(Ordering::Release);
+        {
+            let request_result = self
+                .post_command(command::Allowed::AddressDevice(
+                    *command::AddressDevice::default()
+                        .set_slot_id(slot_id)
+                        .set_input_context_pointer(context_addr),
+                ))
+                .await;
+            if let Ok(RequestResult::Success) = request_result {
+            } else {
+                panic!("address device failed! {:#?}", request_result);
             }
         }
     }
 
-    #[inline]
+    async fn enable_slot(&self) -> u8 {
+        let request_result = self
+            .post_command(command::Allowed::EnableSlot(
+                *command::EnableSlot::default().set_slot_type({
+                    // TODO: PCI未初始化，读不出来
+                    // let mut regs = self.regs.lock();
+                    // match regs.supported_protocol(port) {
+                    //     Some(p) => p.header.read_volatile().protocol_slot_type(),
+                    //     None => {
+                    //         warn!(
+                    //             "{TAG} Failed to find supported protocol information for port {}",
+                    //             port
+                    //         );
+                    //         0
+                    //     }
+                    // }
+                    0
+                }),
+            ))
+            .await;
+
+        request_result.expect_err("failed on request slot id to xhci!")
+    }
+
+    async fn disable_slot(&mut self, _slot: u8) -> Result<RequestResult, u8> {
+        todo!()
+    }
+
     async fn control_transfer(&self, slot: u8, urb_req: ControlTransfer) -> usize {
         let direction = urb_req.request_type.direction;
         let buffer = urb_req.data;
@@ -628,7 +800,7 @@ where
                 max_ports,
                 max_irqs,
                 scratchpad_buf_arr: OnceCell::new(),
-                cmd,
+                cmd: cmd.into(),
                 event,
                 dev_ctx: dev_ctx.into(),
                 devices: Vec::new().into(),
@@ -663,5 +835,14 @@ where
             writer.register(handler);
             return;
         }
+    }
+}
+
+fn parse_default_max_packet_size_from_speed(port_speed: u8) -> u16 {
+    match port_speed {
+        1 | 3 => 64,
+        2 => 8,
+        4 => 512,
+        v => unimplemented!("PSI: {}", v),
     }
 }

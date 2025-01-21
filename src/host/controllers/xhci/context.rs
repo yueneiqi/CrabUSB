@@ -21,7 +21,7 @@ where
 {
     config: Arc<USBSystemConfig<O>>,
     pub dcbaa: SyncUnsafeCell<DMA<[u64; 256], O::DMA>>,
-    pub device_ctx_inners: BTreeMap<usize, DeviceCtxInner<O>>,
+    pub device_ctx_inners: BTreeMap<u8, DeviceCtxInner<O>>,
 }
 
 pub struct DeviceCtxInner<O>
@@ -56,9 +56,17 @@ where
             .get_mut(channel)
     }
 
+    pub fn read_transfer_ring(&self, slot: u8, dci: usize) -> Option<&Ring<O>> {
+        assert!(dci > 0 && dci < 32);
+        self.device_ctx_inners
+            .get(&(slot as _))?
+            .transfer_rings
+            .get(dci - 1)
+    }
+
     pub fn new_slot(
         &mut self,
-        slot: usize,
+        slot: u8,
         num_ep: usize, // cannot lesser than 0, and consider about alignment, use usize
     ) {
         let os = &self.config.os;

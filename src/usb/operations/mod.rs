@@ -12,6 +12,8 @@ use num_derive::FromPrimitive;
 
 use crate::host::device::ConfigureSemaphore;
 
+use super::standards::TopologyRoute;
+
 pub mod bulk;
 pub mod control;
 pub mod interrupt;
@@ -70,7 +72,7 @@ pub enum RequestedOperation {
     Bulk(BulkTransfer),
     Interrupt(InterruptTransfer),
     Isoch(IsochTransfer),
-    Assign,
+    Assign_Address(TopologyRoute),
     #[default]
     NOOP,
 }

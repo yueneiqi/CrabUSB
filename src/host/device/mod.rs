@@ -12,15 +12,16 @@ use crate::usb::{
         CallbackFn, ChannelNumber, CompleteAction, ExtraAction, RequestResult, RequestedOperation,
         USBRequest,
     },
-    standards::RouteString,
+    standards::TopologyRoute,
 };
 
 pub struct USBDevice<'a, const BUFFER_SIZE: usize> {
     pub state: Arc<RwLock<DeviceState>>,
+    pub slot_id: OnceCell<u8>,
     pub vendor_id: OnceCell<u16>,
     pub product_id: OnceCell<u16>,
     pub descriptor: OnceCell<Arc<TopologicalUSBDescriptorRoot>>,
-    pub topology_path: RouteString,
+    pub topology_path: TopologyRoute,
     configure_sem: Arc<Semaphore>,
     request_channel: RwLock<ArcAsyncRingBufPord<USBRequest<'a, BUFFER_SIZE>, BUFFER_SIZE>>,
 }
@@ -28,7 +29,7 @@ pub struct USBDevice<'a, const BUFFER_SIZE: usize> {
 pub enum DeviceState {
     Probed,
     Assigned,
-    Configured(usize),
+    Configured,
     PreDrop, //for hot plug,  how to design drop all working functions mechanism?
 }
 
@@ -55,7 +56,8 @@ impl<'a, const BUFFER_SIZE: usize> USBDevice<'a, BUFFER_SIZE> {
             descriptor: OnceCell::new(),
             request_channel: sender.into(),
             configure_sem: Semaphore::new(1).into(),
-            topology_path: RouteString::new(),
+            topology_path: TopologyRoute::new(),
+            slot_id: OnceCell::new(),
         }
     }
 
@@ -133,14 +135,18 @@ impl<'a, const BUFFER_SIZE: usize> USBDevice<'a, BUFFER_SIZE> {
         {
             let sem = self.configure_sem.acquire_arc().await;
             self.post_usb_request(USBRequest {
-                operation: RequestedOperation::Assign,
+                operation: RequestedOperation::Assign_Address(self.topology_path.clone()),
                 extra_action: ExtraAction::default(),
                 complete_action: CompleteAction::DropSem(ConfigureSemaphore(sem)),
             })
             .await;
         }
 
-        self.configure_sem.acquire().await;
+        let sem = self.configure_sem.acquire().await;
+
+        //TODO: set self transfer speed
+
+        drop(sem);
         *self.state.write().await = DeviceState::Assigned;
     }
 }

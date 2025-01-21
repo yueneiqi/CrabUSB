@@ -81,7 +81,7 @@ pub struct bmRequestType {
 }
 
 impl bmRequestType {
-    pub fn new(
+    pub const fn new(
         direction: Direction,
         transfer_type: DataTransferType,
         recipient: Recipient,
