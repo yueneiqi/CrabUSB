@@ -1,4 +1,4 @@
-use core::{mem, ops::Deref, slice::SlicePattern};
+use core::mem;
 
 use alloc::{borrow::ToOwned, sync::Arc};
 
@@ -14,7 +14,6 @@ use usb_descriptor_decoder::descriptors::{
 use crate::{
     abstractions::{dma::DMA, PlatformAbstractions, USBSystemConfig},
     usb::{
-        self,
         operations::{
             control::{
                 bRequest, bRequestStandard, bmRequestType, construct_control_transfer_type,
@@ -240,7 +239,7 @@ where
                 parser.append_config(buffer.to_owned());
             }
             trace!("try to parse device descriptor!");
-            self.descriptor.set(parser.summarize().into());
+            self.descriptor.set(parser.summarize().into()).await;
             debug!("parsed device desc: {:#?}", self.descriptor)
         };
     }

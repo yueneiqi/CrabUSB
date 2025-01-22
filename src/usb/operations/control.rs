@@ -96,7 +96,7 @@ impl bmRequestType {
 
 impl From<bmRequestType> for u8 {
     fn from(value: bmRequestType) -> Self {
-        (value.direction as u8) << 7 | (value.transfer_type as u8) << 5 | value.recipient as u8
+        ((value.direction as u8) << 7) | ((value.transfer_type as u8) << 5) | value.recipient as u8
     }
 }
 
@@ -166,6 +166,6 @@ pub(crate) struct DescriptionTypeIndexPairForControlTransfer {
 
 impl DescriptionTypeIndexPairForControlTransfer {
     pub(crate) const fn bits(self) -> u16 {
-        (self.ty as u16) << 8 | (self.i as u16)
+        ((self.ty as u16) << 8) | (self.i as u16)
     }
 }

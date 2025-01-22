@@ -26,7 +26,7 @@ where
 }
 
 cfg_match! {
-    cfg(feature = "backend-xhci")=>{
+    feature = "backend-xhci"=>{
         mod xhci;
 
         pub fn initialize_controller<'a, O>(

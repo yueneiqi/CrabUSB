@@ -1,7 +1,6 @@
-use core::{fmt::Display, ops::Range};
+use core::fmt::Display;
 
 use bit_field::BitField;
-use tock_registers::interfaces::{Readable, Writeable};
 ///utils according to USB standard
 
 /// The Route String is a 20-bit field in downstream directed packets that the hub uses to route
@@ -48,7 +47,7 @@ impl TopologyRoute {
 
         let from = i * 4;
         let to = i * 4 + 4;
-        return self.0.get_bits(from..to) as _;
+        self.0.get_bits(from..to) as _
     }
 
     pub fn write_hub_tier(&mut self, i: usize, u: u8) {

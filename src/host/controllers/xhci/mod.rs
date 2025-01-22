@@ -1,6 +1,5 @@
 use core::{
     cell::SyncUnsafeCell,
-    iter::Once,
     mem,
     num::NonZeroUsize,
     ops::DerefMut,
@@ -9,7 +8,7 @@ use core::{
 
 use ::futures::{stream, FutureExt, StreamExt};
 use alloc::{
-    borrow::ToOwned, collections::btree_map::BTreeMap, format, string::ToString, sync::Arc,
+    borrow::ToOwned, collections::btree_map::BTreeMap, format, sync::Arc,
     vec::Vec,
 };
 use async_lock::{Mutex, OnceCell, RwLock};
@@ -21,13 +20,13 @@ use event_ring::EventRing;
 use log::{debug, error, info, trace, warn};
 use ring::Ring;
 use ringbuf::traits::{Consumer, Split};
-use usb_descriptor_decoder::descriptors::{self, USBStandardDescriptorTypes};
+use usb_descriptor_decoder::descriptors::{USBStandardDescriptorTypes};
 use xhci::{
     accessor::Mapper,
     context::{Input, InputHandler},
     extended_capabilities::XhciSupportedProtocol,
     ring::trb::{
-        command::{self, AddressDevice},
+        command::{self},
         event::{self, CommandCompletion, CompletionCode},
         transfer::{self, TransferType},
     },
@@ -41,7 +40,7 @@ use crate::{
             bRequest, bRequestStandard, bmRequestType, construct_control_transfer_type,
             ControlTransfer, DataTransferType, Recipient,
         },
-        CallbackValue, CompleteAction, Direction, ExtraAction, RequestResult, USBRequest,
+        CallbackValue, CompleteAction, Direction, RequestResult, USBRequest,
     },
 };
 
@@ -496,9 +495,7 @@ where
                             }
                         }
                         CompleteAction::DropSem(configure_semaphore) => {
-                            match code.expect(
-                                format!("got fail signal on executing trb {:x}", addr).as_str(),
-                            ) {
+                            match code.unwrap_or_else(|_| panic!("got fail signal on executing trb {:x}", addr)) {
                                 CompletionCode::Success | CompletionCode::ShortPacket => {
                                     drop(configure_semaphore);
                                 }
@@ -550,7 +547,7 @@ where
         match req.operation {
             crate::usb::operations::RequestedOperation::Control(control_transfer) => {
                 let key = self
-                    .control_transfer(unsafe { slot.get_unchecked() }.clone(), control_transfer)
+                    .control_transfer(*unsafe { slot.get_unchecked() }, control_transfer)
                     .await;
                 self.finish_jobs
                     .write()
@@ -564,13 +561,8 @@ where
                 let dev = unsafe { self.devices.get().as_ref_unchecked() }
                     .iter()
                     .find(|dev| dev.topology_path == route)
-                    .expect(
-                        format!(
-                            "want assign a new device, but such device with route {} notfound",
-                            route
-                        )
-                        .as_str(),
-                    );
+                    .unwrap_or_else(|| panic!("want assign a new device, but such device with route {} notfound",
+                            route));
                 self.assign_address_device(dev).await;
                 if let CompleteAction::DropSem(sem) = req.complete_action {
                     drop(sem);
@@ -693,7 +685,7 @@ where
                                 0,
                             )
                             .bits(),
-                            data: Some((buffer.addr() as usize, buffer.length_for_bytes())),
+                            data: Some((buffer.addr(), buffer.length_for_bytes())),
                             response: false,
                         },
                     ),
@@ -711,8 +703,7 @@ where
             let mut data = [0u8; 8];
             data[..8].copy_from_slice(&buffer);
             trace!("got {:?}", data);
-            data.last()
-                .and_then(|len| Some(if *len == 0 { 8u8 } else { *len }))
+            data.last().map(|len| if *len == 0 { 8u8 } else { *len })
                 .unwrap()
         };
 
@@ -734,7 +725,7 @@ where
                 "CMD: evaluating context for set endpoint0 packet size {}",
                 actual_speed
             );
-            (input as *mut Input<16>).addr() as u64;
+            (input as *mut Input<16>).addr();
         }
 
         fence(Ordering::Release);
