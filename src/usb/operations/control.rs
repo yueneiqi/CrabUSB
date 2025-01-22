@@ -151,3 +151,21 @@ impl ControlTransfer {
         }
     }
 }
+
+pub(crate) const fn construct_control_transfer_type(
+    desc: u8,
+    index: u8,
+) -> DescriptionTypeIndexPairForControlTransfer {
+    DescriptionTypeIndexPairForControlTransfer { ty: desc, i: index }
+}
+
+pub(crate) struct DescriptionTypeIndexPairForControlTransfer {
+    ty: u8,
+    i: u8,
+}
+
+impl DescriptionTypeIndexPairForControlTransfer {
+    pub(crate) const fn bits(self) -> u16 {
+        (self.ty as u16) << 8 | (self.i as u16)
+    }
+}

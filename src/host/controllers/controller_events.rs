@@ -2,16 +2,15 @@ use alloc::{boxed::Box, sync::Arc, vec::Vec};
 
 use crate::{abstractions::PlatformAbstractions, host::device::USBDevice};
 
-pub type DeviceEventHandler<'a, const RING_BUFFER_SIZE: usize> =
-    dyn Fn(Arc<USBDevice<'a, RING_BUFFER_SIZE>>) + Sync + Send;
+pub type DeviceEventHandler<'a, O> = dyn Fn(Arc<USBDevice<'a, O>>) + Sync + Send;
 
 pub enum EventHandler<'controller_life, O>
 where
     O: PlatformAbstractions,
     [(); O::RING_BUFFER_SIZE]:,
 {
-    NewAssignedDevice(Box<DeviceEventHandler<'controller_life, { O::RING_BUFFER_SIZE }>>),
-    DeviceDrop(Box<DeviceEventHandler<'controller_life, { O::RING_BUFFER_SIZE }>>),
+    NewAssignedDevice(Box<DeviceEventHandler<'controller_life, O>>),
+    DeviceDrop(Box<DeviceEventHandler<'controller_life, O>>),
 }
 
 pub struct EventHandlerTable<'controller_life, O>
@@ -19,10 +18,8 @@ where
     O: PlatformAbstractions,
     [(); O::RING_BUFFER_SIZE]:,
 {
-    new_assigned_device_event_handlers:
-        Vec<Box<DeviceEventHandler<'controller_life, { O::RING_BUFFER_SIZE }>>>,
-    drop_device_event_handlers:
-        Vec<Box<DeviceEventHandler<'controller_life, { O::RING_BUFFER_SIZE }>>>,
+    new_assigned_device_event_handlers: Vec<Box<DeviceEventHandler<'controller_life, O>>>,
+    drop_device_event_handlers: Vec<Box<DeviceEventHandler<'controller_life, O>>>,
 }
 
 impl<'controller_life, O> EventHandlerTable<'controller_life, O>
@@ -44,10 +41,7 @@ where
         }
     }
 
-    pub fn new_assigned_device(
-        &self,
-        dev: Arc<USBDevice<'controller_life, { O::RING_BUFFER_SIZE }>>,
-    ) {
+    pub fn new_assigned_device(&self, dev: Arc<USBDevice<'controller_life, O>>) {
         self.new_assigned_device_event_handlers
             .iter()
             .for_each(|f| f(dev.clone()));

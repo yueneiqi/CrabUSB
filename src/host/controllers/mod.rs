@@ -20,7 +20,7 @@ where
     fn init(&self);
 
     /// each device should able to access actual transfer function in controller
-    fn device_accesses(&self) -> &Vec<Arc<USBDevice<'a, { O::RING_BUFFER_SIZE }>>>;
+    fn device_accesses(&self) -> &Vec<Arc<USBDevice<'a, O>>>;
 
     fn register_event_handler(&self, register: EventHandler<'a, O>);
 }
@@ -72,7 +72,7 @@ where
         panic!("dummy controller")
     }
 
-    fn device_accesses(&self) -> &Vec<Arc<USBDevice<'a, { O::RING_BUFFER_SIZE }>>> {
+    fn device_accesses(&self) -> &Vec<Arc<USBDevice<'a, O>>> {
         panic!("dummy controller")
     }
 

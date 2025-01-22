@@ -14,9 +14,11 @@ where
 {
     fn should_active(
         &self,
-        independent_dev: &Arc<USBDevice<'a, { O::RING_BUFFER_SIZE }>>,
+        independent_dev: &Arc<USBDevice<'a, O>>,
         config: &Arc<USBSystemConfig<O>>,
-    ) -> Option<Arc<RwLock<dyn USBSystemDriverModuleInstanceFunctionalInterface<'a, O>>>>;
+    ) -> Option<Arc<RwLock<dyn USBSystemDriverModuleInstanceFunctionalInterface<'a, O>>>>
+    where
+        [(); O::RING_BUFFER_SIZE]:;
 
     fn preload_module(&self);
 }

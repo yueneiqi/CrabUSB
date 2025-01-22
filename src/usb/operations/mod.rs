@@ -72,7 +72,7 @@ pub enum RequestedOperation {
     Bulk(BulkTransfer),
     Interrupt(InterruptTransfer),
     Isoch(IsochTransfer),
-    Assign_Address(TopologyRoute),
+    AssignAddress(TopologyRoute),
     #[default]
     NOOP,
 }

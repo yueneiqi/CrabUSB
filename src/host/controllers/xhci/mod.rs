@@ -21,6 +21,7 @@ use event_ring::EventRing;
 use log::{debug, error, info, trace, warn};
 use ring::Ring;
 use ringbuf::traits::{Consumer, Split};
+use usb_descriptor_decoder::descriptors::{self, USBStandardDescriptorTypes};
 use xhci::{
     accessor::Mapper,
     context::{Input, InputHandler},
@@ -33,10 +34,14 @@ use xhci::{
 };
 
 use crate::{
-    abstractions::{PlatformAbstractions, USBSystemConfig},
+    abstractions::{dma::DMA, PlatformAbstractions, USBSystemConfig},
     host::device::{ArcAsyncRingBufCons, USBDevice},
     usb::operations::{
-        control::ControlTransfer, CompleteAction, Direction, RequestResult, USBRequest,
+        control::{
+            bRequest, bRequestStandard, bmRequestType, construct_control_transfer_type,
+            ControlTransfer, DataTransferType, Recipient,
+        },
+        CallbackValue, CompleteAction, Direction, ExtraAction, RequestResult, USBRequest,
     },
 };
 
@@ -66,10 +71,11 @@ pub struct Receiver<'a, const RINGBUF_SIZE: usize> {
     pub receiver: ArcAsyncRingBufCons<USBRequest<'a, RINGBUF_SIZE>, RINGBUF_SIZE>,
 }
 
-pub struct XHCIController<'a, O, const RINGBUF_SIZE: usize>
+pub struct XHCIController<'a, O>
 //had to poll controller it self!
 where
-    O: PlatformAbstractions,
+    'a: 'static,
+    O: PlatformAbstractions + 'a,
     [(); O::RING_BUFFER_SIZE]:,
 {
     config: Arc<USBSystemConfig<O>>,
@@ -82,17 +88,18 @@ where
     scratchpad_buf_arr: OnceCell<ScratchpadBufferArray<O>>,
     cmd: Mutex<Ring<O>>,
     event: EventRing<O>,
-    dev_ctx: RwLock<DeviceContextList<O, RINGBUF_SIZE>>,
-    devices: SyncUnsafeCell<Vec<Arc<USBDevice<'a, RINGBUF_SIZE>>>>,
-    requests: SyncUnsafeCell<Vec<Receiver<'a, RINGBUF_SIZE>>>,
-    finish_jobs: RwLock<BTreeMap<usize, CompleteAction<'a, RINGBUF_SIZE>>>,
-    extra_works: BTreeMap<usize, USBRequest<'a, RINGBUF_SIZE>>,
+    dev_ctx: RwLock<DeviceContextList<O, { O::RING_BUFFER_SIZE }>>,
+    devices: SyncUnsafeCell<Vec<Arc<USBDevice<'a, O>>>>,
+    requests: SyncUnsafeCell<Vec<Receiver<'a, { O::RING_BUFFER_SIZE }>>>,
+    finish_jobs: RwLock<BTreeMap<usize, CompleteAction<'a, { O::RING_BUFFER_SIZE }>>>,
+    extra_works: BTreeMap<usize, USBRequest<'a, { O::RING_BUFFER_SIZE }>>,
     event_tables: RwLock<EventHandlerTable<'a, O>>,
 }
 
-impl<'a, O, const RINGBUF_SIZE: usize> XHCIController<'a, O, RINGBUF_SIZE>
+impl<'a, O> XHCIController<'a, O>
 where
-    O: PlatformAbstractions,
+    'a: 'static,
+    O: PlatformAbstractions + 'a,
     [(); O::RING_BUFFER_SIZE]:,
 {
     fn chip_hardware_reset(&self) -> &Self {
@@ -318,12 +325,15 @@ where
 
             {
                 use async_ringbuf::{traits::*, AsyncStaticRb};
-                let (prod, cons) =
-                    AsyncStaticRb::<USBRequest<'a, RINGBUF_SIZE>, RINGBUF_SIZE>::default().split();
+                let (prod, cons) = AsyncStaticRb::<
+                    USBRequest<'a, { O::RING_BUFFER_SIZE }>,
+                    { O::RING_BUFFER_SIZE },
+                >::default()
+                .split();
 
                 unsafe { self.devices.get().as_mut_unchecked() }.push(
                     {
-                        let mut usbdevice = USBDevice::new(prod);
+                        let mut usbdevice = USBDevice::new(self.config.clone(), prod);
                         usbdevice
                             .topology_path
                             .append_port_number((port_id + 1) as _);
@@ -486,7 +496,17 @@ where
                             }
                         }
                         CompleteAction::DropSem(configure_semaphore) => {
-                            drop(configure_semaphore);
+                            match code.expect(
+                                format!("got fail signal on executing trb {:x}", addr).as_str(),
+                            ) {
+                                CompletionCode::Success | CompletionCode::ShortPacket => {
+                                    drop(configure_semaphore);
+                                }
+                                other => panic!(
+                                    "got fail signal on executing trb {:x}-{:?}",
+                                    addr, other
+                                ),
+                            }
                         }
                         _ => {
                             panic!("keep working request should not appear at here!")
@@ -522,7 +542,11 @@ where
     }
 
     #[allow(unused_variables)]
-    async fn post_transfer(&self, req: USBRequest<'a, RINGBUF_SIZE>, slot: &OnceCell<u8>) {
+    async fn post_transfer(
+        &self,
+        req: USBRequest<'a, { O::RING_BUFFER_SIZE }>,
+        slot: &OnceCell<u8>,
+    ) {
         match req.operation {
             crate::usb::operations::RequestedOperation::Control(control_transfer) => {
                 let key = self
@@ -536,7 +560,7 @@ where
             crate::usb::operations::RequestedOperation::Bulk(bulk_transfer) => todo!(),
             crate::usb::operations::RequestedOperation::Interrupt(interrupt_transfer) => todo!(),
             crate::usb::operations::RequestedOperation::Isoch(isoch_transfer) => todo!(),
-            crate::usb::operations::RequestedOperation::Assign_Address(route) => {
+            crate::usb::operations::RequestedOperation::AssignAddress(route) => {
                 let dev = unsafe { self.devices.get().as_ref_unchecked() }
                     .iter()
                     .find(|dev| dev.topology_path == route)
@@ -561,7 +585,7 @@ where
             }
         }
     }
-    async fn assign_address_device(&self, device: &Arc<USBDevice<'a, RINGBUF_SIZE>>) {
+    async fn assign_address_device(&self, device: &Arc<USBDevice<'a, O>>) {
         const CONTROL_DCI: usize = 1;
 
         let slot_id = self.enable_slot().await;
@@ -638,6 +662,95 @@ where
                 ))
                 .await;
             if let Ok(RequestResult::Success) = request_result {
+            } else if let Err(slotid) = request_result
+                && slot_id == slotid
+            {
+            } else {
+                panic!("address device failed! {:#?}", request_result);
+            }
+        }
+        fence(Ordering::Release);
+
+        let actual_speed = {
+            //set speed
+            let buffer = DMA::new_vec(0u8, 8, 64, self.config.os.dma_alloc());
+            let callbackv = CallbackValue::default();
+
+            self.post_transfer(
+                USBRequest {
+                    extra_action: Default::default(),
+                    operation: crate::usb::operations::RequestedOperation::Control(
+                        ControlTransfer {
+                            request_type: bmRequestType::new(
+                                Direction::In,
+                                DataTransferType::Standard,
+                                Recipient::Device,
+                            ),
+                            request: bRequest::Standard(bRequestStandard::GetDescriptor),
+                            index: 0,
+                            value: construct_control_transfer_type(
+                                USBStandardDescriptorTypes::Device as u8,
+                                0,
+                            )
+                            .bits(),
+                            data: Some((buffer.addr() as usize, buffer.length_for_bytes())),
+                            response: false,
+                        },
+                    ),
+                    complete_action: CompleteAction::SimpleResponse(callbackv.clone()),
+                },
+                &device.slot_id,
+            )
+            .await;
+
+            if let Ok(RequestResult::Success) = callbackv.wait().await {
+            } else {
+                panic!("get basic desc failed! {:#?}", callbackv);
+            }
+
+            let mut data = [0u8; 8];
+            data[..8].copy_from_slice(&buffer);
+            trace!("got {:?}", data);
+            data.last()
+                .and_then(|len| Some(if *len == 0 { 8u8 } else { *len }))
+                .unwrap()
+        };
+
+        {
+            let mut writer = self.dev_ctx.write().await;
+            let input = writer
+                .device_ctx_inners
+                .get_mut(&slot_id)
+                .unwrap()
+                .in_ctx
+                .deref_mut();
+
+            input
+                .device_mut()
+                .endpoint_mut(1) //dci=1: endpoint 0
+                .set_max_packet_size(actual_speed as _);
+
+            debug!(
+                "CMD: evaluating context for set endpoint0 packet size {}",
+                actual_speed
+            );
+            (input as *mut Input<16>).addr() as u64;
+        }
+
+        fence(Ordering::Release);
+        {
+            let request_result = self
+                .post_command(command::Allowed::EvaluateContext(
+                    *command::EvaluateContext::default()
+                        .set_slot_id(slot_id)
+                        .set_input_context_pointer(context_addr),
+                ))
+                .await;
+            if let Ok(RequestResult::Success) = request_result {
+            } else if let Err(slotid) = request_result
+                && slot_id == slotid
+            //Ewwww, we need reform this part as soom as possible
+            {
             } else {
                 panic!("address device failed! {:#?}", request_result);
             }
@@ -753,9 +866,10 @@ where
     }
 }
 
-impl<'a, O> Controller<'a, O> for XHCIController<'a, O, { O::RING_BUFFER_SIZE }>
+impl<'a, O> Controller<'a, O> for XHCIController<'a, O>
 where
     O: PlatformAbstractions,
+    [(); O::RING_BUFFER_SIZE]:,
 {
     fn new(config: Arc<USBSystemConfig<O>>) -> Self
     where
@@ -826,7 +940,7 @@ where
         .initial_probe();
     }
 
-    fn device_accesses(&self) -> &Vec<Arc<USBDevice<'a, { O::RING_BUFFER_SIZE }>>> {
+    fn device_accesses(&self) -> &Vec<Arc<USBDevice<'a, O>>> {
         unsafe { self.devices.get().as_ref_unchecked() }
     }
 
