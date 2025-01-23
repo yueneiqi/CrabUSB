@@ -1,13 +1,15 @@
 pub mod configurations;
 pub mod isoch;
-use core::fmt::Debug;
+use core::{cell::SyncUnsafeCell, fmt::Debug};
 
 use alloc::sync::Arc;
-use async_lock::OnceCell;
+use async_lock::{Mutex, OnceCell, RwLock};
 use bulk::BulkTransfer;
 use control::ControlTransfer;
+use futures::channel::oneshot::Sender;
 use interrupt::InterruptTransfer;
 use isoch::IsochTransfer;
+use nosy::{sync::Notifier, Listen, Listener, Sink};
 use num_derive::FromPrimitive;
 
 use crate::host::device::ConfigureSemaphore;
@@ -19,13 +21,13 @@ pub mod control;
 pub mod interrupt;
 
 #[derive(Default)]
-pub struct USBRequest<'a, const N: usize> {
+pub struct USBRequest {
     pub extra_action: ExtraAction,
     pub operation: RequestedOperation,
-    pub complete_action: CompleteAction<'a, N>,
+    pub complete_action: CompleteAction,
 }
 
-impl<const N: usize> USBRequest<'_, N> {
+impl USBRequest {
     pub fn is_control(&self) -> bool {
         match self.operation {
             RequestedOperation::Control(_) => true,
@@ -34,7 +36,7 @@ impl<const N: usize> USBRequest<'_, N> {
     }
 }
 
-impl<const N: usize> Debug for USBRequest<'_, N> {
+impl Debug for USBRequest {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("USBRequest")
             .field("operation", &self.operation)
@@ -51,18 +53,29 @@ pub enum ExtraAction {
     KeepFill(ChannelNumber),
 }
 
-pub type CallbackFn = Arc<dyn FnOnce(Result<RequestResult, u8>) + Send + Sync>;
-pub type CallbackValue = Arc<OnceCell<Result<RequestResult, u8>>>; //todo: change this into a oneshot channel
-pub type KeepCallbackValue<'a, const N: usize> =
-    async_ringbuf::AsyncStaticProd<'a, Result<RequestResult, u8>, N>;
+type ValueResult = Result<RequestResult, u8>;
+pub type CallbackValue = Sender<ValueResult>; //todo: change this into a oneshot channel
+pub type KeepCallbackValue = Notifier<ValueResult>;
+
+pub fn construct_keep_callback_listener() -> (
+    nosy::Notifier<
+        Result<RequestResult, u8>,
+        Arc<dyn Listener<Result<RequestResult, u8>> + Send + Sync>,
+    >,
+    Sink<Result<RequestResult, u8>>,
+) {
+    let notifier = KeepCallbackValue::new();
+    let sink = Sink::new();
+    notifier.listen(sink.listener());
+    (notifier, sink)
+}
 
 #[derive(Default)]
-pub enum CompleteAction<'a, const N: usize> {
+pub enum CompleteAction {
     #[default]
     NOOP,
-    Callback(CallbackFn),
     SimpleResponse(CallbackValue),
-    KeepResponse(KeepCallbackValue<'a, N>),
+    KeepResponse(KeepCallbackValue),
     DropSem(ConfigureSemaphore),
 }
 
@@ -72,7 +85,7 @@ pub enum RequestedOperation {
     Bulk(BulkTransfer),
     Interrupt(InterruptTransfer),
     Isoch(IsochTransfer),
-    AssignAddress(TopologyRoute),
+    InitializeDevice(TopologyRoute),
     #[default]
     NOOP,
 }

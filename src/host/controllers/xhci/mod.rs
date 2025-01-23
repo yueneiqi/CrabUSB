@@ -7,20 +7,19 @@ use core::{
 };
 
 use ::futures::{stream, FutureExt, StreamExt};
-use alloc::{
-    borrow::ToOwned, collections::btree_map::BTreeMap, format, sync::Arc,
-    vec::Vec,
-};
+use alloc::{borrow::ToOwned, collections::btree_map::BTreeMap, format, sync::Arc, vec::Vec};
 use async_lock::{Mutex, OnceCell, RwLock};
 use async_ringbuf::traits::{AsyncConsumer, AsyncProducer};
 use axhid::hidreport::hid::Item;
 use context::{DeviceContextList, ScratchpadBufferArray};
 use embassy_futures::block_on;
 use event_ring::EventRing;
+use futures::channel::oneshot;
+use inner_urb::XHCICompleteAction;
 use log::{debug, error, info, trace, warn};
 use ring::Ring;
 use ringbuf::traits::{Consumer, Split};
-use usb_descriptor_decoder::descriptors::{USBStandardDescriptorTypes};
+use usb_descriptor_decoder::descriptors::USBStandardDescriptorTypes;
 use xhci::{
     accessor::Mapper,
     context::{Input, InputHandler},
@@ -48,6 +47,7 @@ use super::{controller_events::EventHandlerTable, Controller};
 
 mod context;
 mod event_ring;
+mod inner_urb;
 mod ring;
 
 pub type RegistersBase = xhci::Registers<MemMapper>;
@@ -65,9 +65,9 @@ impl Mapper for MemMapper {
     fn unmap(&mut self, _virt_start: usize, _bytes: usize) {}
 }
 
-pub struct Receiver<'a, const RINGBUF_SIZE: usize> {
+pub struct Receiver<const RINGBUF_SIZE: usize> {
     pub slot: OnceCell<u8>,
-    pub receiver: ArcAsyncRingBufCons<USBRequest<'a, RINGBUF_SIZE>, RINGBUF_SIZE>,
+    pub receiver: ArcAsyncRingBufCons<USBRequest, RINGBUF_SIZE>,
 }
 
 pub struct XHCIController<'a, O>
@@ -89,9 +89,9 @@ where
     event: EventRing<O>,
     dev_ctx: RwLock<DeviceContextList<O, { O::RING_BUFFER_SIZE }>>,
     devices: SyncUnsafeCell<Vec<Arc<USBDevice<'a, O>>>>,
-    requests: SyncUnsafeCell<Vec<Receiver<'a, { O::RING_BUFFER_SIZE }>>>,
-    finish_jobs: RwLock<BTreeMap<usize, CompleteAction<'a, { O::RING_BUFFER_SIZE }>>>,
-    extra_works: BTreeMap<usize, USBRequest<'a, { O::RING_BUFFER_SIZE }>>,
+    requests: SyncUnsafeCell<Vec<Receiver<{ O::RING_BUFFER_SIZE }>>>,
+    finish_jobs: RwLock<BTreeMap<usize, XHCICompleteAction>>,
+    extra_works: BTreeMap<usize, USBRequest>,
     event_tables: RwLock<EventHandlerTable<'a, O>>,
 }
 
@@ -324,11 +324,8 @@ where
 
             {
                 use async_ringbuf::{traits::*, AsyncStaticRb};
-                let (prod, cons) = AsyncStaticRb::<
-                    USBRequest<'a, { O::RING_BUFFER_SIZE }>,
-                    { O::RING_BUFFER_SIZE },
-                >::default()
-                .split();
+                let (prod, cons) =
+                    AsyncStaticRb::<USBRequest, { O::RING_BUFFER_SIZE }>::default().split();
 
                 unsafe { self.devices.get().as_mut_unchecked() }.push(
                     {
@@ -401,19 +398,19 @@ where
             });
     }
 
-    async fn post_command(&self, trb: command::Allowed) -> Result<RequestResult, u8> {
+    async fn post_command(&self, trb: command::Allowed) -> CommandCompletion {
         let addr = self.cmd.lock().await.enque_command(trb);
-        let cell = Arc::new(OnceCell::new());
+        let (sender, receiver) = oneshot::channel();
 
         self.finish_jobs
             .write()
             .await
-            .insert(addr, CompleteAction::SimpleResponse(cell.clone()));
+            .insert(addr, XHCICompleteAction::CommandCallback(sender));
 
         self.ring_db(0, 0.into(), 0.into());
         fence(Ordering::Release);
 
-        cell.wait().await.to_owned()
+        receiver.await.unwrap()
     }
 
     fn get_speed(&self, port: u8) -> u8 {
@@ -434,18 +431,13 @@ where
                     let addr = transfer_event.trb_pointer() as _;
                     //todo: transfer event trb had extra info compare to command event., should we split these two?
 
-                    self.mark_completed(transfer_event.completion_code(), addr, None)
+                    self.mark_transfer_completed(transfer_event.completion_code(), addr)
                         .await;
                 }
                 event::Allowed::CommandCompletion(command_completion) => {
                     let addr = command_completion.command_trb_pointer() as _;
 
-                    self.mark_completed(
-                        command_completion.completion_code(),
-                        addr,
-                        Some(command_completion),
-                    )
-                    .await;
+                    self.mark_command_completed(addr, command_completion).await;
                 }
                 event::Allowed::PortStatusChange(port_status_change) => {
                     warn!("{TAG} port status changed! {:#?}", port_status_change);
@@ -461,12 +453,7 @@ where
         self.update_erdp();
     }
 
-    async fn mark_completed(
-        &mut self,
-        code: Result<CompletionCode, u8>,
-        addr: usize,
-        dirty_hack_for_command: Option<CommandCompletion>, //ewwwwww, should consider how to improve it
-    ) {
+    async fn mark_command_completed(&mut self, addr: usize, cmp: CommandCompletion) {
         //should compile to jump table?
         if self.finish_jobs.read().await.contains_key(&addr) {
             self.finish_jobs
@@ -474,28 +461,35 @@ where
                 .then(|mut write| async move { write.remove(&addr).unwrap() })
                 .then(|action| async move {
                     match action {
-                        CompleteAction::NOOP => {}
-                        CompleteAction::Callback(_fn_once) => {
-                            // fn_once({
-                            //     transfer_event
-                            //         .completion_code()
-                            //         .map(|a| a.into())
-                            //         .map_err(|a| a as _)
-                            // });had size issue, to solve.
+                        XHCICompleteAction::CommandCallback(sender) => sender.send(cmp),
+                        _ => {
+                            panic!("do not call command completion on transfer event!")
                         }
-                        CompleteAction::SimpleResponse(once_cell) => {
-                            if let Some(completion) = dirty_hack_for_command
-                                && code.is_ok_and(|ok| ok == CompletionCode::Success)
-                            {
-                                let _ = once_cell.set(Err(completion.slot_id())).await;
-                            } else {
-                                let _ = once_cell
-                                    .set(code.map(|a| a.into()).map_err(|a| a as _))
-                                    .await;
-                            }
+                    }
+                    .unwrap();
+                })
+                .await
+        }
+    }
+
+    async fn mark_transfer_completed(&mut self, code: Result<CompletionCode, u8>, addr: usize) {
+        //should compile to jump table?
+        if self.finish_jobs.read().await.contains_key(&addr) {
+            self.finish_jobs
+                .write()
+                .then(|mut write| async move { write.remove(&addr).unwrap() })
+                .then(|action| async move {
+                    match action {
+                        XHCICompleteAction::STANDARD(CompleteAction::NOOP) => {}
+                        XHCICompleteAction::STANDARD(CompleteAction::SimpleResponse(sender)) => {
+                            let _ = sender.send(code.map(|a| a.into()).map_err(|a| a as _));
                         }
-                        CompleteAction::DropSem(configure_semaphore) => {
-                            match code.unwrap_or_else(|_| panic!("got fail signal on executing trb {:x}", addr)) {
+                        XHCICompleteAction::STANDARD(CompleteAction::DropSem(
+                            configure_semaphore,
+                        )) => {
+                            match code.unwrap_or_else(|_| {
+                                panic!("got fail signal on executing trb {:x}", addr)
+                            }) {
                                 CompletionCode::Success | CompletionCode::ShortPacket => {
                                     drop(configure_semaphore);
                                 }
@@ -514,9 +508,7 @@ where
         } else if self.extra_works.contains_key(&addr) {
             match &mut self.extra_works.get_mut(&addr).unwrap().complete_action {
                 CompleteAction::KeepResponse(async_wrap) => {
-                    let _ = async_wrap
-                        .push(code.map(|a| a.into()).map_err(|a| a as _))
-                        .await;
+                    let _ = async_wrap.notify(&code.map(|a| a.into()).map_err(|a| a as _));
                 }
                 _ => panic!("oneshot job appeared at extra works zone!"),
             }
@@ -539,11 +531,7 @@ where
     }
 
     #[allow(unused_variables)]
-    async fn post_transfer(
-        &self,
-        req: USBRequest<'a, { O::RING_BUFFER_SIZE }>,
-        slot: &OnceCell<u8>,
-    ) {
+    async fn post_transfer(&self, req: USBRequest, slot: &OnceCell<u8>) {
         match req.operation {
             crate::usb::operations::RequestedOperation::Control(control_transfer) => {
                 let key = self
@@ -552,17 +540,21 @@ where
                 self.finish_jobs
                     .write()
                     .await
-                    .insert(key, req.complete_action);
+                    .insert(key, req.complete_action.into());
             }
             crate::usb::operations::RequestedOperation::Bulk(bulk_transfer) => todo!(),
             crate::usb::operations::RequestedOperation::Interrupt(interrupt_transfer) => todo!(),
             crate::usb::operations::RequestedOperation::Isoch(isoch_transfer) => todo!(),
-            crate::usb::operations::RequestedOperation::AssignAddress(route) => {
+            crate::usb::operations::RequestedOperation::InitializeDevice(route) => {
                 let dev = unsafe { self.devices.get().as_ref_unchecked() }
                     .iter()
                     .find(|dev| dev.topology_path == route)
-                    .unwrap_or_else(|| panic!("want assign a new device, but such device with route {} notfound",
-                            route));
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "want assign a new device, but such device with route {} notfound",
+                            route
+                        )
+                    });
                 self.assign_address_device(dev).await;
                 if let CompleteAction::DropSem(sem) = req.complete_action {
                     drop(sem);
@@ -577,6 +569,7 @@ where
             }
         }
     }
+
     async fn assign_address_device(&self, device: &Arc<USBDevice<'a, O>>) {
         const CONTROL_DCI: usize = 1;
 
@@ -653,20 +646,19 @@ where
                         .set_input_context_pointer(context_addr),
                 ))
                 .await;
-            if let Ok(RequestResult::Success) = request_result {
-            } else if let Err(slotid) = request_result
-                && slot_id == slotid
-            {
-            } else {
-                panic!("address device failed! {:#?}", request_result);
-            }
+            assert_eq!(
+                RequestResult::Success,
+                Into::<RequestResult>::into(request_result.completion_code().unwrap()),
+                "address device failed! {:#?}",
+                request_result
+            );
         }
         fence(Ordering::Release);
 
         let actual_speed = {
             //set speed
             let buffer = DMA::new_vec(0u8, 8, 64, self.config.os.dma_alloc());
-            let callbackv = CallbackValue::default();
+            let (sender, receiver) = oneshot::channel();
 
             self.post_transfer(
                 USBRequest {
@@ -689,25 +681,27 @@ where
                             response: false,
                         },
                     ),
-                    complete_action: CompleteAction::SimpleResponse(callbackv.clone()),
+                    complete_action: CompleteAction::SimpleResponse(sender),
                 },
                 &device.slot_id,
             )
             .await;
 
-            if let Ok(RequestResult::Success) = callbackv.wait().await {
+            let request_result = receiver.await;
+            if let Ok(Ok(RequestResult::Success)) = request_result {
             } else {
-                panic!("get basic desc failed! {:#?}", callbackv);
+                panic!("get basic desc failed! {:#?}", request_result);
             }
 
             let mut data = [0u8; 8];
             data[..8].copy_from_slice(&buffer);
             trace!("got {:?}", data);
-            data.last().map(|len| if *len == 0 { 8u8 } else { *len })
+            data.last()
+                .map(|len| if *len == 0 { 8u8 } else { *len })
                 .unwrap()
         };
 
-        {
+        let context_addr = {
             let mut writer = self.dev_ctx.write().await;
             let input = writer
                 .device_ctx_inners
@@ -725,8 +719,8 @@ where
                 "CMD: evaluating context for set endpoint0 packet size {}",
                 actual_speed
             );
-            (input as *mut Input<16>).addr();
-        }
+            (input as *const Input<16>).addr() as _
+        };
 
         fence(Ordering::Release);
         {
@@ -737,14 +731,13 @@ where
                         .set_input_context_pointer(context_addr),
                 ))
                 .await;
-            if let Ok(RequestResult::Success) = request_result {
-            } else if let Err(slotid) = request_result
-                && slot_id == slotid
-            //Ewwww, we need reform this part as soom as possible
-            {
-            } else {
-                panic!("address device failed! {:#?}", request_result);
-            }
+
+            assert_eq!(
+                Into::<RequestResult>::into(request_result.completion_code().unwrap()),
+                RequestResult::Success,
+                "evaluate context failed! {:#?}",
+                request_result
+            );
         }
     }
 
@@ -769,7 +762,14 @@ where
             ))
             .await;
 
-        request_result.expect_err("failed on request slot id to xhci!")
+        assert_eq!(
+            Into::<RequestResult>::into(request_result.completion_code().unwrap()),
+            RequestResult::Success,
+            "enable slot failed! {:#?}",
+            request_result
+        );
+
+        request_result.slot_id()
     }
 
     async fn disable_slot(&mut self, _slot: u8) -> Result<RequestResult, u8> {

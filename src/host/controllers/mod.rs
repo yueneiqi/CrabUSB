@@ -25,8 +25,8 @@ where
     fn register_event_handler(&self, register: EventHandler<'a, O>);
 }
 
-cfg_match! {
-    feature = "backend-xhci"=>{
+match_cfg! {
+    #[cfg(feature = "backend-xhci")]=>{
         mod xhci;
 
         pub fn initialize_controller<'a, O>(
@@ -47,7 +47,7 @@ cfg_match! {
         ) -> Box<dyn Controller<'a, O>>
         where
             O: PlatformAbstractions+'static,
-            'a:'static//wtf
+            'a:'static, [(); O::RING_BUFFER_SIZE]://wtf
         {
             Box::new(DummyController::new(config))
         }

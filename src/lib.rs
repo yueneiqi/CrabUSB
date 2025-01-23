@@ -6,10 +6,12 @@
     async_closure,
     ptr_as_ref_unchecked,
     fn_traits,
-    cfg_match,
     sync_unsafe_cell,
     generic_const_exprs
 )]
+
+#[macro_use(match_cfg)]
+extern crate match_cfg;
 
 use abstractions::{PlatformAbstractions, USBSystemConfig};
 use alloc::{boxed::Box, collections::btree_map::BTreeMap, string::String, sync::Arc, vec::Vec};

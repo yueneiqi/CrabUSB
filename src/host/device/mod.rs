@@ -4,8 +4,9 @@ use alloc::{borrow::ToOwned, sync::Arc};
 
 use async_lock::{OnceCell, RwLock, Semaphore, SemaphoreGuardArc};
 use async_ringbuf::{traits::AsyncProducer, AsyncRb};
-use futures::FutureExt;
+use futures::{channel::oneshot, FutureExt};
 use log::{debug, trace};
+use nosy::{Listen, Notifier, Sink};
 use usb_descriptor_decoder::descriptors::{
     parser::RawDescriptorParser, topological_desc::TopologicalUSBDescriptorRoot,
     USBStandardDescriptorTypes,
@@ -15,12 +16,13 @@ use crate::{
     abstractions::{dma::DMA, PlatformAbstractions, USBSystemConfig},
     usb::{
         operations::{
+            construct_keep_callback_listener,
             control::{
                 bRequest, bRequestStandard, bmRequestType, construct_control_transfer_type,
                 ControlTransfer, DataTransferType, Recipient,
             },
-            CallbackFn, ChannelNumber, CompleteAction, Direction, ExtraAction, RequestResult,
-            RequestedOperation, USBRequest,
+            ChannelNumber, CompleteAction, Direction, ExtraAction, KeepCallbackValue,
+            RequestResult, RequestedOperation, USBRequest,
         },
         standards::TopologyRoute,
     },
@@ -39,9 +41,7 @@ where
     pub descriptor: OnceCell<Arc<TopologicalUSBDescriptorRoot>>,
     pub topology_path: TopologyRoute,
     configure_sem: Arc<Semaphore>,
-    request_channel: RwLock<
-        ArcAsyncRingBufPord<USBRequest<'a, { O::RING_BUFFER_SIZE }>, { O::RING_BUFFER_SIZE }>,
-    >,
+    request_channel: RwLock<ArcAsyncRingBufPord<USBRequest, { O::RING_BUFFER_SIZE }>>,
 }
 
 pub enum DeviceState {
@@ -72,10 +72,7 @@ where
 {
     pub fn new(
         cfg: Arc<USBSystemConfig<O>>,
-        sender: ArcAsyncRingBufPord<
-            USBRequest<'a, { O::RING_BUFFER_SIZE }>,
-            { O::RING_BUFFER_SIZE },
-        >,
+        sender: ArcAsyncRingBufPord<USBRequest, { O::RING_BUFFER_SIZE }>,
     ) -> Self {
         USBDevice {
             state: RwLock::new(DeviceState::Probed).into(),
@@ -94,7 +91,7 @@ where
         self.configure_sem.try_acquire_arc().map(ConfigureSemaphore)
     }
 
-    async fn post_usb_request(&self, request: USBRequest<'a, { O::RING_BUFFER_SIZE }>) {
+    async fn post_usb_request(&self, request: USBRequest) {
         self.request_channel
             .write()
             .await
@@ -109,7 +106,7 @@ where
             })
     }
 
-    pub async fn request_oneshot(&self, request: RequestedOperation) {
+    pub async fn request_no_response(&self, request: RequestedOperation) {
         self.check_self_status().await;
         self.post_usb_request(USBRequest {
             operation: request,
@@ -122,30 +119,31 @@ where
     ///I must lost my mind...
     pub async fn request_once(&self, request: RequestedOperation) -> Result<RequestResult, u8> {
         self.check_self_status().await;
-        let cell = Arc::new(OnceCell::new());
+        let (sender, receiver) = oneshot::channel();
         self.post_usb_request(USBRequest {
             extra_action: ExtraAction::NOOP,
             operation: request,
-            complete_action: CompleteAction::SimpleResponse(cell.clone()),
+            complete_action: CompleteAction::SimpleResponse(sender),
         })
         .await;
 
-        cell.wait().await.to_owned()
+        receiver.await.unwrap().to_owned()
     }
 
     pub async fn keep_request(
         &self,
         request: RequestedOperation,
-        callback: CallbackFn,
         channel_number: ChannelNumber,
-    ) {
+    ) -> Sink<Result<RequestResult, u8>> {
         self.check_self_status().await;
+        let channel = construct_keep_callback_listener();
         self.post_usb_request(USBRequest {
             extra_action: ExtraAction::KeepFill(channel_number),
             operation: request,
-            complete_action: CompleteAction::Callback(callback),
+            complete_action: CompleteAction::KeepResponse(channel.0),
         })
-        .await
+        .await;
+        channel.1
     }
 
     async fn check_self_status(&self) -> &Self {
@@ -164,7 +162,7 @@ where
         {
             let sem = self.configure_sem.acquire_arc().await;
             self.post_usb_request(USBRequest {
-                operation: RequestedOperation::AssignAddress(self.topology_path.clone()),
+                operation: RequestedOperation::InitializeDevice(self.topology_path.clone()),
                 extra_action: ExtraAction::default(),
                 complete_action: CompleteAction::DropSem(ConfigureSemaphore(sem)),
             })
@@ -239,7 +237,10 @@ where
                 parser.append_config(buffer.to_owned());
             }
             trace!("try to parse device descriptor!");
-            self.descriptor.set(parser.summarize().into()).await;
+            self.descriptor
+                .set(parser.summarize().into())
+                .await
+                .unwrap();
             debug!("parsed device desc: {:#?}", self.descriptor)
         };
     }
