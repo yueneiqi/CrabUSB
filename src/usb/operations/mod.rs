@@ -1,9 +1,8 @@
 pub mod configurations;
 pub mod isoch;
-use core::{cell::SyncUnsafeCell, fmt::Debug};
+use core::fmt::Debug;
 
 use alloc::sync::Arc;
-use async_lock::{Mutex, OnceCell, RwLock};
 use bulk::BulkTransfer;
 use control::ControlTransfer;
 use futures::channel::oneshot::Sender;

@@ -1,14 +1,7 @@
-use alloc::sync::Arc;
-use futures::channel::oneshot::{Receiver, Sender};
-use xhci::ring::trb::{
-    command,
-    event::{self, CommandCompletion},
-};
+use futures::channel::oneshot::Sender;
+use xhci::ring::trb::event::{CommandCompletion};
 
-use crate::usb::operations::{
-    bulk::BulkTransfer, control::ControlTransfer, interrupt::InterruptTransfer,
-    isoch::IsochTransfer, CompleteAction, ExtraAction, RequestedOperation, USBRequest,
-};
+use crate::usb::operations::CompleteAction;
 
 pub type XHCICommandCallbackValue = Sender<CommandCompletion>;
 

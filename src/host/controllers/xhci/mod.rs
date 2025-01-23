@@ -7,7 +7,7 @@ use core::{
 };
 
 use ::futures::{stream, FutureExt, StreamExt};
-use alloc::{borrow::ToOwned, collections::btree_map::BTreeMap, format, sync::Arc, vec::Vec};
+use alloc::{borrow::ToOwned, collections::btree_map::BTreeMap, sync::Arc, vec::Vec};
 use async_lock::{Mutex, OnceCell, RwLock};
 use async_ringbuf::traits::{AsyncConsumer, AsyncProducer};
 use axhid::hidreport::hid::Item;
@@ -38,8 +38,7 @@ use crate::{
         control::{
             bRequest, bRequestStandard, bmRequestType, construct_control_transfer_type,
             ControlTransfer, DataTransferType, Recipient,
-        },
-        CallbackValue, CompleteAction, Direction, RequestResult, USBRequest,
+        }, CompleteAction, Direction, RequestResult, USBRequest,
     },
 };
 
@@ -508,7 +507,7 @@ where
         } else if self.extra_works.contains_key(&addr) {
             match &mut self.extra_works.get_mut(&addr).unwrap().complete_action {
                 CompleteAction::KeepResponse(async_wrap) => {
-                    let _ = async_wrap.notify(&code.map(|a| a.into()).map_err(|a| a as _));
+                    async_wrap.notify(&code.map(|a| a.into()).map_err(|a| a as _));
                 }
                 _ => panic!("oneshot job appeared at extra works zone!"),
             }

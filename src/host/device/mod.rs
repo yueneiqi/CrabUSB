@@ -6,7 +6,7 @@ use async_lock::{OnceCell, RwLock, Semaphore, SemaphoreGuardArc};
 use async_ringbuf::{traits::AsyncProducer, AsyncRb};
 use futures::{channel::oneshot, FutureExt};
 use log::{debug, trace};
-use nosy::{Listen, Notifier, Sink};
+use nosy::Sink;
 use usb_descriptor_decoder::descriptors::{
     parser::RawDescriptorParser, topological_desc::TopologicalUSBDescriptorRoot,
     USBStandardDescriptorTypes,
@@ -21,8 +21,8 @@ use crate::{
                 bRequest, bRequestStandard, bmRequestType, construct_control_transfer_type,
                 ControlTransfer, DataTransferType, Recipient,
             },
-            ChannelNumber, CompleteAction, Direction, ExtraAction, KeepCallbackValue,
-            RequestResult, RequestedOperation, USBRequest,
+            ChannelNumber, CompleteAction, Direction, ExtraAction, RequestResult,
+            RequestedOperation, USBRequest,
         },
         standards::TopologyRoute,
     },
@@ -65,7 +65,7 @@ pub type ArcAsyncRingBufCons<T, const N: usize> = async_ringbuf::wrap::AsyncWrap
 #[derive(Debug)]
 pub struct ConfigureSemaphore(SemaphoreGuardArc);
 
-impl<'a, O> USBDevice<'a, O>
+impl<O> USBDevice<'_, O>
 where
     O: PlatformAbstractions,
     [(); O::RING_BUFFER_SIZE]:,
