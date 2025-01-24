@@ -1,5 +1,6 @@
 use core::{
     cell::SyncUnsafeCell,
+    future::{Future, IntoFuture},
     mem,
     num::NonZeroUsize,
     ops::DerefMut,
@@ -14,7 +15,12 @@ use axhid::hidreport::hid::Item;
 use context::{DeviceContextList, ScratchpadBufferArray};
 use embassy_futures::block_on;
 use event_ring::EventRing;
-use futures::channel::oneshot;
+use futures::{
+    channel::oneshot,
+    future::{join, BoxFuture, Join},
+    stream::Repeat,
+    task::FutureObj,
+};
 use inner_urb::XHCICompleteAction;
 use log::{debug, error, info, trace, warn};
 use ring::Ring;
@@ -32,13 +38,14 @@ use xhci::{
 };
 
 use crate::{
-    abstractions::{dma::DMA, PlatformAbstractions, USBSystemConfig},
+    abstractions::{dma::DMA, PlatformAbstractions, USBSystemConfig, WakeMethod},
     host::device::{ArcAsyncRingBufCons, USBDevice},
     usb::operations::{
         control::{
             bRequest, bRequestStandard, bmRequestType, construct_control_transfer_type,
             ControlTransfer, DataTransferType, Recipient,
-        }, CompleteAction, Direction, RequestResult, USBRequest,
+        },
+        CompleteAction, Direction, RequestResult, USBRequest,
     },
 };
 
@@ -85,12 +92,12 @@ where
     max_irqs: u16,
     scratchpad_buf_arr: OnceCell<ScratchpadBufferArray<O>>,
     cmd: Mutex<Ring<O>>,
-    event: EventRing<O>,
+    event: SyncUnsafeCell<EventRing<O>>,
     dev_ctx: RwLock<DeviceContextList<O, { O::RING_BUFFER_SIZE }>>,
     devices: SyncUnsafeCell<Vec<Arc<USBDevice<'a, O>>>>,
     requests: SyncUnsafeCell<Vec<Receiver<{ O::RING_BUFFER_SIZE }>>>,
     finish_jobs: RwLock<BTreeMap<usize, XHCICompleteAction>>,
-    extra_works: BTreeMap<usize, USBRequest>,
+    extra_works: SyncUnsafeCell<BTreeMap<usize, USBRequest>>,
     event_tables: RwLock<EventHandlerTable<'a, O>>,
 }
 
@@ -207,15 +214,16 @@ where
         {
             debug!("{TAG} Writing ERSTZ");
             ir0.erstsz.update_volatile(|r| r.set(1));
+            let event_ring = unsafe { self.event.get().as_ref_unchecked() };
 
-            let erdp = self.event.erdp();
+            let erdp = event_ring.erdp();
             debug!("{TAG} Writing ERDP: {:X}", erdp);
 
             ir0.erdp.update_volatile(|r| {
                 r.set_event_ring_dequeue_pointer(erdp);
             });
 
-            let erstba = self.event.erstba();
+            let erstba = event_ring.erstba();
             debug!("{TAG} Writing ERSTBA: {:X}", erstba);
 
             ir0.erstba.update_volatile(|r| {
@@ -230,6 +238,10 @@ where
             ir0.iman.update_volatile(|im| {
                 im.set_interrupt_enable();
             });
+        }
+
+        if let WakeMethod::Interrupt(int_register) = &self.config.wake_method {
+            int_register(&|| block_on(self.wake_event_ring()))
         }
 
         self
@@ -393,7 +405,9 @@ where
             .interrupter_mut(0)
             .erdp
             .update_volatile(|f| {
-                f.set_event_ring_dequeue_pointer(self.event.erdp());
+                f.set_event_ring_dequeue_pointer(
+                    unsafe { self.event.get().as_ref_unchecked() }.erdp(),
+                );
             });
     }
 
@@ -421,38 +435,39 @@ where
     }
 
     #[allow(unused_variables)]
-    async fn on_event_arrived(&mut self) {
-        while let Some((event, cycle)) = self.event.next() {
-            debug!("{TAG}:[CMD] received event:{:?},cycle{cycle}", event);
+    async fn on_event_arrived(&self) {
+        let (event, cycle) = unsafe { self.event.get().as_mut_unchecked() }
+            .async_next()
+            .await;
+        debug!("{TAG}:[CMD] received event:{:?},cycle{cycle}", event);
 
-            match event {
-                event::Allowed::TransferEvent(transfer_event) => {
-                    let addr = transfer_event.trb_pointer() as _;
-                    //todo: transfer event trb had extra info compare to command event., should we split these two?
+        match event {
+            event::Allowed::TransferEvent(transfer_event) => {
+                let addr = transfer_event.trb_pointer() as _;
+                //todo: transfer event trb had extra info compare to command event., should we split these two?
 
-                    self.mark_transfer_completed(transfer_event.completion_code(), addr)
-                        .await;
-                }
-                event::Allowed::CommandCompletion(command_completion) => {
-                    let addr = command_completion.command_trb_pointer() as _;
-
-                    self.mark_command_completed(addr, command_completion).await;
-                }
-                event::Allowed::PortStatusChange(port_status_change) => {
-                    warn!("{TAG} port status changed! {:#?}", port_status_change);
-                }
-                event::Allowed::BandwidthRequest(bandwidth_request) => todo!(),
-                event::Allowed::Doorbell(doorbell) => todo!(),
-                event::Allowed::HostController(host_controller) => todo!(),
-                event::Allowed::DeviceNotification(device_notification) => todo!(),
-                event::Allowed::MfindexWrap(mfindex_wrap) => todo!(),
+                self.mark_transfer_completed(transfer_event.completion_code(), addr)
+                    .await;
             }
+            event::Allowed::CommandCompletion(command_completion) => {
+                let addr = command_completion.command_trb_pointer() as _;
+
+                self.mark_command_completed(addr, command_completion).await;
+            }
+            event::Allowed::PortStatusChange(port_status_change) => {
+                warn!("{TAG} port status changed! {:#?}", port_status_change);
+            }
+            event::Allowed::BandwidthRequest(bandwidth_request) => todo!(),
+            event::Allowed::Doorbell(doorbell) => todo!(),
+            event::Allowed::HostController(host_controller) => todo!(),
+            event::Allowed::DeviceNotification(device_notification) => todo!(),
+            event::Allowed::MfindexWrap(mfindex_wrap) => todo!(),
         }
 
         self.update_erdp();
     }
 
-    async fn mark_command_completed(&mut self, addr: usize, cmp: CommandCompletion) {
+    async fn mark_command_completed(&self, addr: usize, cmp: CommandCompletion) {
         //should compile to jump table?
         if self.finish_jobs.read().await.contains_key(&addr) {
             self.finish_jobs
@@ -471,7 +486,7 @@ where
         }
     }
 
-    async fn mark_transfer_completed(&mut self, code: Result<CompletionCode, u8>, addr: usize) {
+    async fn mark_transfer_completed(&self, code: Result<CompletionCode, u8>, addr: usize) {
         //should compile to jump table?
         if self.finish_jobs.read().await.contains_key(&addr) {
             self.finish_jobs
@@ -504,8 +519,13 @@ where
                     };
                 })
                 .await
-        } else if self.extra_works.contains_key(&addr) {
-            match &mut self.extra_works.get_mut(&addr).unwrap().complete_action {
+        } else if unsafe { self.extra_works.get().as_ref_unchecked() }.contains_key(&addr) {
+            let extra_works = unsafe { self.extra_works.get().as_mut_unchecked() };
+            match extra_works
+                .get_mut(&addr)
+                .map(|req| &req.complete_action)
+                .unwrap()
+            {
                 CompleteAction::KeepResponse(async_wrap) => {
                     async_wrap.notify(&code.map(|a| a.into()).map_err(|a| a as _));
                 }
@@ -514,7 +534,7 @@ where
         }
     }
 
-    async fn run_once(&mut self) {
+    async fn run_once(&self) {
         stream::select_all(unsafe {
             //TODO: rewrite this into yield stream. but not just post once
             self.requests.get().read_volatile().iter_mut().map(|r| {
@@ -854,6 +874,13 @@ where
 
         trb_pointers.last().unwrap().to_owned()
     }
+
+    async fn wake_event_ring(&self) {
+        if let WakeMethod::Timer(sem) = &self.config.wake_method {
+            sem.acquire().await.forget();
+        }
+        unsafe { self.event.get().as_ref_unchecked() }.wake();
+    }
 }
 
 impl<'a, O> Controller<'a, O> for XHCIController<'a, O>
@@ -905,12 +932,12 @@ where
                 max_irqs,
                 scratchpad_buf_arr: OnceCell::new(),
                 cmd: cmd.into(),
-                event,
+                event: event.into(),
                 dev_ctx: dev_ctx.into(),
                 devices: Vec::new().into(),
                 finish_jobs: BTreeMap::new().into(),
                 requests: Vec::new().into(), //safety: only controller itself could fetch, all acccess via run_once
-                extra_works: BTreeMap::new(),
+                extra_works: BTreeMap::new().into(),
                 event_tables: EventHandlerTable::new().into(),
             }
         }
@@ -939,6 +966,28 @@ where
             writer.register(handler);
             return;
         }
+    }
+
+    fn workaround(&'a self) -> BoxFuture<'a, ()> {
+        // BoxFuture::
+        async {
+            join(
+                async {
+                    loop {
+                        self.on_event_arrived().await
+                    }
+                },
+                async {
+                    loop {
+                        self.run_once().await
+                    }
+                },
+            )
+            .await;
+
+            ()
+        }
+        .boxed()
     }
 }
 

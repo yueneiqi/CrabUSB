@@ -9,7 +9,7 @@ where
     O: PlatformAbstractions,
     [(); O::RING_BUFFER_SIZE]:,
 {
-    NewAssignedDevice(Box<DeviceEventHandler<'controller_life, O>>),
+    NewInitializedDevice(Box<DeviceEventHandler<'controller_life, O>>),
     DeviceDrop(Box<DeviceEventHandler<'controller_life, O>>),
 }
 
@@ -36,7 +36,9 @@ where
 
     pub fn register(&mut self, handler: EventHandler<'controller_life, O>) {
         match handler {
-            EventHandler::NewAssignedDevice(f) => self.new_assigned_device_event_handlers.push(f),
+            EventHandler::NewInitializedDevice(f) => {
+                self.new_assigned_device_event_handlers.push(f)
+            }
             EventHandler::DeviceDrop(f) => self.drop_device_event_handlers.push(f),
         }
     }

@@ -1,6 +1,6 @@
 use core::future::Future;
 
-use alloc::sync::Arc;
+use alloc::{string::String, sync::Arc};
 use async_lock::RwLock;
 
 use crate::{
@@ -21,6 +21,8 @@ where
         [(); O::RING_BUFFER_SIZE]:;
 
     fn preload_module(&self);
+
+    fn name(&self) -> &'a str;
 }
 
 pub trait USBSystemDriverModuleInstanceFunctionalInterface<'a, O>:

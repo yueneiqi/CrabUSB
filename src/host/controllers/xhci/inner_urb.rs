@@ -1,5 +1,5 @@
 use futures::channel::oneshot::Sender;
-use xhci::ring::trb::event::{CommandCompletion};
+use xhci::ring::trb::event::CommandCompletion;
 
 use crate::usb::operations::CompleteAction;
 

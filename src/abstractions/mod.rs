@@ -1,6 +1,8 @@
-use core::alloc::Allocator;
+use core::{alloc::Allocator, task::Waker};
 
 use alloc::sync::Arc;
+use async_lock::Semaphore;
+use nosy::future::{WakeFlag, WakeFlagListener};
 
 pub mod dma;
 
@@ -11,9 +13,10 @@ pub trait PlatformAbstractions: Clone + Send + Sync + Sized {
     const PAGE_SIZE: usize;
     const RING_BUFFER_SIZE: usize;
     fn dma_alloc(&self) -> Self::DMA;
+    fn timer(&self) -> usize;
 }
 
-pub type InterruptRegister = dyn Fn(dyn Fn()) + Send + Sync;
+pub type InterruptRegister = dyn Fn(&dyn Fn()) + Send + Sync;
 
 #[derive(Clone)]
 pub struct USBSystemConfig<O>
@@ -21,6 +24,13 @@ where
     O: PlatformAbstractions,
 {
     pub base_addr: O::VirtAddr,
-    pub interrupt_register: Option<Arc<InterruptRegister>>,
+    pub wake_method: WakeMethod,
     pub os: O,
+}
+
+#[derive(Clone)]
+pub enum WakeMethod {
+    Interrupt(Arc<InterruptRegister>),
+    ///remember: increase permit on event. consumer side would drop every permit but not return it!
+    Timer(Arc<Semaphore>),
 }

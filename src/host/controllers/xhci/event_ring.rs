@@ -1,9 +1,14 @@
+use core::future::Future;
 use core::sync::atomic::{fence, Ordering};
+use core::task::{Poll, Waker};
 
 pub use super::ring::Ring;
 use crate::abstractions::dma::DMA;
 use crate::abstractions::PlatformAbstractions;
 
+use async_ringbuf::consumer::PopFuture;
+use futures::future::FusedFuture;
+use futures::task::AtomicWaker;
 use tock_registers::interfaces::Writeable;
 use tock_registers::register_structs;
 use tock_registers::registers::ReadWrite;
@@ -24,6 +29,7 @@ pub struct EventRing<O>
 where
     O: PlatformAbstractions,
 {
+    pub waker: AtomicWaker,
     pub ring: Ring<O>,
     pub ste: DMA<[EventRingSte], O::DMA>,
 }
@@ -37,6 +43,7 @@ where
         let mut ring = EventRing {
             ste: DMA::zeroed(1, 64, a),
             ring: Ring::new(os, 256, false),
+            waker: AtomicWaker::new(),
         };
         ring.ring.cycle = true;
         ring.ste[0].addr_low.set(ring.ring.register() as u32);
@@ -76,6 +83,10 @@ where
         Some((allowed, cycle))
     }
 
+    pub fn wake(&self) {
+        self.waker.wake();
+    }
+
     pub fn has_next(&self) -> bool {
         let (data, flag) = self.ring.current_data();
         let data = unsafe {
@@ -99,11 +110,70 @@ where
         })
     }
 
+    pub fn async_next<'a>(&'a mut self) -> NextFuture<'a, O> {
+        NextFuture {
+            owner: self,
+            done: false,
+        }
+    }
+
     pub fn erdp(&self) -> u64 {
         self.ring.register() & 0xFFFF_FFFF_FFFF_FFF0
     }
     pub fn erstba(&self) -> u64 {
         let ptr = &self.ste[0];
         ptr as *const EventRingSte as usize as u64
+    }
+
+    fn register_waker(&self, waker: &Waker)
+    where
+        O: PlatformAbstractions,
+    {
+        self.waker.register(waker);
+    }
+}
+
+pub struct NextFuture<'a, O>
+where
+    O: PlatformAbstractions,
+{
+    owner: &'a mut EventRing<O>,
+    done: bool,
+}
+
+impl<'a, O> FusedFuture for NextFuture<'a, O>
+where
+    O: PlatformAbstractions,
+{
+    fn is_terminated(&self) -> bool {
+        self.done
+    }
+}
+
+impl<'a, O> Unpin for NextFuture<'a, O> where O: PlatformAbstractions {}
+
+impl<'a, O> Future for NextFuture<'a, O>
+where
+    O: PlatformAbstractions,
+{
+    type Output = (Allowed, bool);
+
+    fn poll(
+        mut self: core::pin::Pin<&mut Self>,
+        cx: &mut core::task::Context<'_>,
+    ) -> core::task::Poll<Self::Output> {
+        let mut waker_registered = false;
+        loop {
+            assert!(!self.done);
+            if let Some(item) = self.owner.next() {
+                self.done = true;
+                break Poll::Ready(item);
+            }
+            if waker_registered {
+                break Poll::Pending;
+            }
+            self.owner.register_waker(cx.waker());
+            waker_registered = true;
+        }
     }
 }

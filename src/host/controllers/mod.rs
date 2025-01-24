@@ -1,6 +1,9 @@
+use core::future::Future;
+
 ///host layer
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use controller_events::EventHandler;
+use futures::{future::BoxFuture, task::FutureObj};
 
 use crate::abstractions::{PlatformAbstractions, USBSystemConfig};
 
@@ -23,6 +26,8 @@ where
     fn device_accesses(&self) -> &Vec<Arc<USBDevice<'a, O>>>;
 
     fn register_event_handler(&self, register: EventHandler<'a, O>);
+
+    fn workaround(&'a self) -> BoxFuture<'a, ()>;
 }
 
 match_cfg! {
@@ -77,6 +82,10 @@ where
     }
 
     fn register_event_handler(&self, register: EventHandler<'a, O>) {
+        panic!("dummy controller")
+    }
+
+    fn workaround(&'a self) -> BoxFuture<'a, ()> {
         panic!("dummy controller")
     }
 }
