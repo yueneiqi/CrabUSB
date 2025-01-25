@@ -1,7 +1,11 @@
 use core::future::Future;
 
+use alloc::boxed::Box;
 use alloc::{string::String, sync::Arc};
 use async_lock::RwLock;
+use async_trait::async_trait;
+use embassy_futures::select;
+use futures::task::FutureObj;
 
 use crate::{
     abstractions::{PlatformAbstractions, USBSystemConfig},
@@ -14,7 +18,7 @@ where
 {
     fn should_active(
         &self,
-        independent_dev: &Arc<USBDevice<'a, O>>,
+        device: &Arc<USBDevice<'a, O>>,
         config: &Arc<USBSystemConfig<O>>,
     ) -> Option<Arc<RwLock<dyn USBSystemDriverModuleInstanceFunctionalInterface<'a, O>>>>
     where
@@ -25,9 +29,10 @@ where
     fn name(&self) -> &'a str;
 }
 
-pub trait USBSystemDriverModuleInstanceFunctionalInterface<'a, O>:
-    Send + Sync + Future<Output = ()>
+#[async_trait]
+pub trait USBSystemDriverModuleInstanceFunctionalInterface<'a, O>: Send + Sync
 where
     O: PlatformAbstractions,
 {
+    async fn run(&mut self);
 }

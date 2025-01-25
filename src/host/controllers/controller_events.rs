@@ -2,7 +2,7 @@ use alloc::{boxed::Box, sync::Arc, vec::Vec};
 
 use crate::{abstractions::PlatformAbstractions, host::device::USBDevice};
 
-pub type DeviceEventHandler<'a, O> = dyn Fn(Arc<USBDevice<'a, O>>) + Sync + Send;
+pub type DeviceEventHandler<'a, O> = dyn Fn(Arc<USBDevice<'a, O>>) + Sync + Send; //TODO: maybe change this into event listener(nosy::Notifier)?
 
 pub enum EventHandler<'controller_life, O>
 where

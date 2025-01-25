@@ -969,7 +969,6 @@ where
     }
 
     fn workaround(&'a self) -> BoxFuture<'a, ()> {
-        // BoxFuture::
         async {
             join(
                 async {
@@ -984,8 +983,6 @@ where
                 },
             )
             .await;
-
-            ()
         }
         .boxed()
     }

@@ -8,7 +8,8 @@
     fn_traits,
     sync_unsafe_cell,
     future_join,
-    generic_const_exprs
+    generic_const_exprs,
+    never_type
 )]
 
 #[macro_use(match_cfg)]
@@ -23,6 +24,7 @@ use futures::{
     join, FutureExt,
 };
 use host::controllers::{controller_events::EventHandler, Controller};
+use usb::functional_interface::USBLayer;
 
 extern crate alloc;
 
@@ -39,22 +41,7 @@ where
 {
     config: Arc<USBSystemConfig<O>>,
     controller: Box<dyn Controller<'a, O>>,
-    driver_modules: BTreeMap<String, Box<dyn driver::driverapi::USBSystemDriverModule<'a, O>>>,
-    functional_interfaces: RwLock<
-        BTreeMap<
-            &'a str,
-            Vec<
-                Arc<
-                    RwLock<
-                        dyn driver::driverapi::USBSystemDriverModuleInstanceFunctionalInterface<
-                            'a,
-                            O,
-                        >,
-                    >,
-                >,
-            >,
-        >,
-    >,
+    usb_layer: USBLayer<'a, O>,
 }
 
 impl<'a, O> USBSystem<'a, O>
@@ -67,12 +54,12 @@ where
         let config: Arc<USBSystemConfig<O>> = config.into();
         let controller: Box<dyn Controller<'a, O>> =
             host::controllers::initialize_controller(config.clone());
+        let usb_layer = USBLayer::new(config.clone());
 
         USBSystem {
             config,
             controller,
-            driver_modules: BTreeMap::new(),
-            functional_interfaces: BTreeMap::new().into(),
+            usb_layer,
         }
     }
 
@@ -82,7 +69,7 @@ where
         mut module: Box<dyn driver::driverapi::USBSystemDriverModule<'a, O>>,
     ) -> &mut Self {
         module.as_mut().preload_module(); //add some hooks?
-        self.driver_modules.insert(name, module);
+        self.usb_layer.driver_modules.insert(name, module);
 
         self
     }
@@ -97,20 +84,7 @@ where
     ) -> &'a Self {
         self.controller
             .register_event_handler(EventHandler::NewInitializedDevice(Box::new(|dev| {
-                self.driver_modules
-                    .values()
-                    .filter_map(|module| {
-                        module
-                            .should_active(&dev, &self.config)
-                            .map(|a| (a, module.name()))
-                    })
-                    .for_each(|(function, name)| {
-                        //todo!
-                        embassy_futures::block_on(self.functional_interfaces.write())
-                            .entry(name)
-                            .or_insert(Vec::new())
-                            .push(function);
-                    });
+                self.usb_layer.new_device_initialized(dev);
             })));
         self
     }
@@ -128,12 +102,12 @@ where
         self
     }
 
-    async fn run_inner(&self) {
+    pub async fn async_run_inner(&self) {
         //TODO structure run logic
-        // join(self.controller.workaround())
+        join(self.controller.workaround(), self.usb_layer.workaround()).await
     }
 
     pub async fn run(&self) {
-        join!(self.run_inner());
+        join!(self.async_run_inner());
     }
 }
