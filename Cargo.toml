@@ -32,4 +32,4 @@ futures = {version = "0.3.31",default-features = false,features = ["async-await"
 match_cfg = "0.1.0"
 nosy = {version = "0.1.0",features = ["async","sync"]}
 async-trait = "0.1.85"
-embassy-executor = "0.7.0"
+embassy-executor = {version = "0.7.0"}

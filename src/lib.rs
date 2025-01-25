@@ -102,12 +102,9 @@ where
         self
     }
 
-    pub async fn async_run_inner(&self) {
+    pub async fn async_run(&'a self) {
         //TODO structure run logic
-        join(self.controller.workaround(), self.usb_layer.workaround()).await
-    }
-
-    pub async fn run(&self) {
-        join!(self.async_run_inner());
+        // join(self.controller.workaround(), self.usb_layer.workaround()).await
+        self.controller.workaround().await;
     }
 }

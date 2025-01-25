@@ -1,8 +1,14 @@
 use alloc::{boxed::Box, collections::btree_map::BTreeMap, string::String, sync::Arc, vec::Vec};
 use async_lock::RwLock;
-use embassy_executor::raw::{Executor, TaskPool};
+use embassy_executor::{
+    raw::{Executor, TaskPool},
+    Spawner,
+};
 use embassy_futures::join::JoinArray;
-use futures::future::SelectOk;
+use futures::{
+    future::{BoxFuture, SelectOk},
+    task::Spawn,
+};
 
 use crate::{
     abstractions::{PlatformAbstractions, USBSystemConfig},
@@ -13,6 +19,7 @@ use crate::{
 pub struct USBLayer<'a, O>
 where
     O: PlatformAbstractions,
+    [(); O::MAX_INTERFACE_TASK]:,
 {
     config: Arc<USBSystemConfig<O>>,
     pub driver_modules: BTreeMap<String, Box<dyn driver::driverapi::USBSystemDriverModule<'a, O>>>,
@@ -36,6 +43,7 @@ where
 impl<'a, O> USBLayer<'a, O>
 where
     O: PlatformAbstractions,
+    [(); O::MAX_INTERFACE_TASK]:,
 {
     pub fn new(config: Arc<USBSystemConfig<O>>) -> Self {
         Self {
