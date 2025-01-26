@@ -17,19 +17,22 @@ extern crate match_cfg;
 
 use abstractions::{PlatformAbstractions, USBSystemConfig};
 use alloc::{boxed::Box, collections::btree_map::BTreeMap, string::String, sync::Arc, vec::Vec};
-use async_lock::RwLock;
+use async_lock::{OnceCell, RwLock};
 use driver::driverapi::USBSystemDriverModule;
+use event::EventBus;
 use futures::{
     future::{join, join_all},
     join, FutureExt,
 };
-use host::controllers::{controller_events::EventHandler, Controller};
+use host::controllers::Controller;
+use lazy_static::lazy_static;
 use usb::functional_interface::USBLayer;
 
 extern crate alloc;
 
 pub mod abstractions;
 pub mod driver;
+pub mod event;
 mod host;
 pub mod usb;
 
@@ -42,6 +45,7 @@ where
     config: Arc<USBSystemConfig<O>>,
     controller: Box<dyn Controller<'a, O>>,
     usb_layer: USBLayer<'a, O>,
+    event_bus: Arc<EventBus<'a, O>>,
 }
 
 impl<'a, O> USBSystem<'a, O>
@@ -52,14 +56,16 @@ where
 {
     pub fn new(config: USBSystemConfig<O>) -> Self {
         let config: Arc<USBSystemConfig<O>> = config.into();
+        let event_bus = Arc::new(EventBus::new());
         let controller: Box<dyn Controller<'a, O>> =
-            host::controllers::initialize_controller(config.clone());
-        let usb_layer = USBLayer::new(config.clone());
+            host::controllers::initialize_controller(config.clone(), event_bus.clone());
+        let usb_layer = USBLayer::new(config.clone(), event_bus.clone());
 
         USBSystem {
             config,
             controller,
             usb_layer,
+            event_bus,
         }
     }
 
@@ -79,13 +85,13 @@ where
         self
     }
 
-    pub fn stage_2_register_basic_event_handlers_aka_glue_between_use_layer_and_controller_layer(
-        &'a self,
-    ) -> &'a Self {
-        self.controller
-            .register_event_handler(EventHandler::NewInitializedDevice(Box::new(|dev| {
-                self.usb_layer.new_device_initialized(dev);
-            })));
+    pub fn stage_2_initialize_usb_layer(&'a self) -> &'a Self {
+        self.event_bus.new_initialized_device.subscribe(|dev| {
+            self.usb_layer.new_device_initialized(dev);
+            squeak::Response::StaySubscribed
+        });
+
+        //TODO: more, like device descruction.etc
         self
     }
 
@@ -94,7 +100,13 @@ where
             self.controller
                 .device_accesses()
                 .iter()
-                .map(|device| device.request_assign())
+                .map(|device| {
+                    device.request_assign().then(|_| async {
+                        self.event_bus
+                            .new_initialized_device
+                            .broadcast(device.clone());
+                    })
+                })
                 .collect::<Vec<_>>(),
         )
         .await;

@@ -39,6 +39,7 @@ use xhci::{
 
 use crate::{
     abstractions::{dma::DMA, PlatformAbstractions, USBSystemConfig, WakeMethod},
+    event::EventBus,
     host::device::{ArcAsyncRingBufCons, USBDevice},
     usb::operations::{
         control::{
@@ -49,7 +50,7 @@ use crate::{
     },
 };
 
-use super::{controller_events::EventHandlerTable, Controller};
+use super::Controller;
 
 mod context;
 mod event_ring;
@@ -98,7 +99,7 @@ where
     requests: SyncUnsafeCell<Vec<Receiver<{ O::RING_BUFFER_SIZE }>>>,
     finish_jobs: RwLock<BTreeMap<usize, XHCICompleteAction>>,
     extra_works: SyncUnsafeCell<BTreeMap<usize, USBRequest>>,
-    event_tables: RwLock<EventHandlerTable<'a, O>>,
+    event_bus: Arc<EventBus<'a, O>>,
 }
 
 impl<'a, O> XHCIController<'a, O>
@@ -583,8 +584,6 @@ where
             }
             crate::usb::operations::RequestedOperation::NOOP => {
                 debug!("{TAG}-device {:#?} transfer nope!", slot)
-                //requestblock, in xhci, had additional request type "command request, thus we should create another URB but not just use USBRequest!"
-                //TODO: enum XHCIRequest
             }
         }
     }
@@ -888,7 +887,7 @@ where
     O: PlatformAbstractions,
     [(); O::RING_BUFFER_SIZE]:,
 {
-    fn new(config: Arc<USBSystemConfig<O>>) -> Self
+    fn new(config: Arc<USBSystemConfig<O>>, event_bus: Arc<EventBus<'a, O>>) -> Self
     where
         Self: Sized,
     {
@@ -938,7 +937,7 @@ where
                 finish_jobs: BTreeMap::new().into(),
                 requests: Vec::new().into(), //safety: only controller itself could fetch, all acccess via run_once
                 extra_works: BTreeMap::new().into(),
-                event_tables: EventHandlerTable::new().into(),
+                event_bus,
             }
         }
     }
@@ -959,13 +958,6 @@ where
 
     fn device_accesses(&self) -> &Vec<Arc<USBDevice<'a, O>>> {
         unsafe { self.devices.get().as_ref_unchecked() }
-    }
-
-    fn register_event_handler(&self, handler: super::controller_events::EventHandler<'a, O>) {
-        while let Some(mut writer) = self.event_tables.try_write() {
-            writer.register(handler);
-            return;
-        }
     }
 
     fn workaround(&'a self) -> BoxFuture<'a, ()> {

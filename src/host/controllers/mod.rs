@@ -2,21 +2,21 @@ use core::future::Future;
 
 ///host layer
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
-use controller_events::EventHandler;
 use futures::{future::BoxFuture, task::FutureObj};
 
-use crate::abstractions::{PlatformAbstractions, USBSystemConfig};
+use crate::{
+    abstractions::{PlatformAbstractions, USBSystemConfig},
+    event::EventBus,
+};
 
 use super::device::USBDevice;
-
-pub mod controller_events;
 
 pub trait Controller<'a, O>: Send + Sync
 where
     O: PlatformAbstractions,
     [(); O::RING_BUFFER_SIZE]:,
 {
-    fn new(config: Arc<USBSystemConfig<O>>) -> Self
+    fn new(config: Arc<USBSystemConfig<O>>, event_bus: Arc<EventBus<'a, O>>) -> Self
     where
         Self: Sized;
 
@@ -24,8 +24,6 @@ where
 
     /// each device should able to access actual transfer function in controller
     fn device_accesses(&self) -> &Vec<Arc<USBDevice<'a, O>>>;
-
-    fn register_event_handler(&self, register: EventHandler<'a, O>);
 
     fn workaround(&'a self) -> BoxFuture<'a, ()>;
 }
@@ -36,6 +34,7 @@ match_cfg! {
 
         pub fn initialize_controller<'a, O>(
             config: Arc<USBSystemConfig<O>>,
+            event_bus:Arc<EventBus<'a,O>>
         ) -> Box<dyn Controller<'a, O>>
         where
         //wtf
@@ -43,7 +42,7 @@ match_cfg! {
             'a:'static,
              [(); O::RING_BUFFER_SIZE]:
         {
-            Box::new(xhci::XHCIController::new(config))
+            Box::new(xhci::XHCIController::new(config,event_bus))
         }
     }
     _=>{
@@ -66,7 +65,7 @@ where
     O: PlatformAbstractions,
     [(); O::RING_BUFFER_SIZE]:,
 {
-    fn new(_config: Arc<USBSystemConfig<O>>) -> Self
+    fn new(_config: Arc<USBSystemConfig<O>>, _evtbus: Arc<EventBus<'a, O>>) -> Self
     where
         Self: Sized,
     {
@@ -78,10 +77,6 @@ where
     }
 
     fn device_accesses(&self) -> &Vec<Arc<USBDevice<'a, O>>> {
-        panic!("dummy controller")
-    }
-
-    fn register_event_handler(&self, register: EventHandler<'a, O>) {
         panic!("dummy controller")
     }
 

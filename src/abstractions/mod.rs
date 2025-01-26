@@ -2,7 +2,6 @@ use core::{alloc::Allocator, task::Waker};
 
 use alloc::sync::Arc;
 use async_lock::Semaphore;
-use nosy::future::{WakeFlag, WakeFlagListener};
 
 pub mod dma;
 
