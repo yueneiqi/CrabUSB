@@ -19,6 +19,7 @@ use abstractions::{PlatformAbstractions, USBSystemConfig};
 use alloc::{boxed::Box, collections::btree_map::BTreeMap, string::String, sync::Arc, vec::Vec};
 use async_lock::{OnceCell, RwLock};
 use driver::driverapi::USBSystemDriverModule;
+use embassy_futures::block_on;
 use event::EventBus;
 use futures::{
     future::{join, join_all},
@@ -114,9 +115,17 @@ where
         self
     }
 
+    pub fn block_stage_3(&self) -> &Self {
+        block_on(self.stage_3_initial_controller_polling_and_deivces())
+    }
+
     pub async fn async_run(&'a self) {
         //TODO structure run logic
         // join(self.controller.workaround(), self.usb_layer.workaround()).await
         self.controller.workaround().await;
+    }
+
+    pub fn block_run(&'a self) {
+        block_on(self.async_run())
     }
 }

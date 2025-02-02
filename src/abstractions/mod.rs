@@ -12,7 +12,6 @@ pub trait PlatformAbstractions: Clone + Send + Sync + Sized {
     const PAGE_SIZE: usize;
     const RING_BUFFER_SIZE: usize;
     fn dma_alloc(&self) -> Self::DMA;
-    fn timer(&self) -> usize;
 }
 
 pub type InterruptRegister = dyn Fn(&dyn Fn()) + Send + Sync;
