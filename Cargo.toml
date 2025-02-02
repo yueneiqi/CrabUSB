@@ -34,4 +34,4 @@ async-trait = "0.1.85"
 embassy-executor = {version = "0.7.0"}
 lazy_static = "1.5.0"
 squeak = "0.2.0"
-nosy = {version = "0.1.0",default-features = false,features = ["sync","async"]}
+nosy = {version = "0.1.0",default-features = false,features = ["async"]}

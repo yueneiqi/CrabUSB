@@ -8,7 +8,7 @@ use control::ControlTransfer;
 use futures::channel::oneshot::Sender;
 use interrupt::InterruptTransfer;
 use isoch::IsochTransfer;
-use nosy::{sync::Notifier, Listen, Listener, Sink};
+use nosy::{Listen, Listener, Sink};
 use num_derive::FromPrimitive;
 
 use crate::host::device::ConfigureSemaphore;
@@ -54,27 +54,27 @@ pub enum ExtraAction {
 
 type ValueResult = Result<RequestResult, u8>;
 pub type CallbackValue = Sender<ValueResult>; //todo: change this into a oneshot channel
-pub type KeepCallbackValue = Notifier<ValueResult>;
+                                              // pub type KeepCallbackValue = <ValueResult>;
 
-pub fn construct_keep_callback_listener() -> (
-    nosy::Notifier<
-        Result<RequestResult, u8>,
-        Arc<dyn Listener<Result<RequestResult, u8>> + Send + Sync>,
-    >,
-    Sink<Result<RequestResult, u8>>,
-) {
-    let notifier = KeepCallbackValue::new();
-    let sink = Sink::new();
-    notifier.listen(sink.listener());
-    (notifier, sink)
-}
+// pub fn construct_keep_callback_listener() -> (
+//     nosy::Notifier<
+//         Result<RequestResult, u8>,
+//         Arc<dyn Listener<Result<RequestResult, u8>> + Send + Sync>,
+//     >,
+//     Sink<Result<RequestResult, u8>>,
+// ) {
+//     let notifier = KeepCallbackValue::new();
+//     let sink = Sink::new();
+//     notifier.listen(sink.listener());
+//     (notifier, sink)
+// }
 
 #[derive(Default)]
 pub enum CompleteAction {
     #[default]
     NOOP,
     SimpleResponse(CallbackValue),
-    KeepResponse(KeepCallbackValue),
+    // KeepResponse(KeepCallbackValue),
     DropSem(ConfigureSemaphore),
 }
 

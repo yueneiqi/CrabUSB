@@ -527,9 +527,9 @@ where
                 .map(|req| &req.complete_action)
                 .unwrap()
             {
-                CompleteAction::KeepResponse(async_wrap) => {
-                    async_wrap.notify(&code.map(|a| a.into()).map_err(|a| a as _));
-                }
+                // CompleteAction::KeepResponse(async_wrap) => {
+                //     async_wrap.notify(&code.map(|a| a.into()).map_err(|a| a as _));
+                // }
                 _ => panic!("oneshot job appeared at extra works zone!"),
             }
         }

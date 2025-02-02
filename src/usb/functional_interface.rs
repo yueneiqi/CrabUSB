@@ -9,10 +9,6 @@ use futures::{
     future::{BoxFuture, SelectOk},
     task::Spawn,
 };
-use nosy::{
-    sync::{Cell, DynListener},
-    IntoDynListener, Listen, Listener, Sink, SinkListener,
-};
 use usb_descriptor_decoder::descriptors::desc_device::Device;
 
 use crate::{

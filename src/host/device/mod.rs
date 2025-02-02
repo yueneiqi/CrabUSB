@@ -16,13 +16,18 @@ use crate::{
     abstractions::{dma::DMA, PlatformAbstractions, USBSystemConfig},
     usb::{
         operations::{
-            construct_keep_callback_listener,
+            // construct_keep_callback_listener,
             control::{
                 bRequest, bRequestStandard, bmRequestType, construct_control_transfer_type,
                 ControlTransfer, DataTransferType, Recipient,
             },
-            ChannelNumber, CompleteAction, Direction, ExtraAction, RequestResult,
-            RequestedOperation, USBRequest,
+            ChannelNumber,
+            CompleteAction,
+            Direction,
+            ExtraAction,
+            RequestResult,
+            RequestedOperation,
+            USBRequest,
         },
         standards::TopologyRoute,
     },
@@ -130,21 +135,21 @@ where
         receiver.await.unwrap().to_owned()
     }
 
-    pub async fn keep_request(
-        &self,
-        request: RequestedOperation,
-        channel_number: ChannelNumber,
-    ) -> Sink<Result<RequestResult, u8>> {
-        self.check_self_status().await;
-        let channel = construct_keep_callback_listener();
-        self.post_usb_request(USBRequest {
-            extra_action: ExtraAction::KeepFill(channel_number),
-            operation: request,
-            complete_action: CompleteAction::KeepResponse(channel.0),
-        })
-        .await;
-        channel.1
-    }
+    // pub async fn keep_request(
+    //     &self,
+    //     request: RequestedOperation,
+    //     channel_number: ChannelNumber,
+    // ) -> Sink<Result<RequestResult, u8>> {
+    //     self.check_self_status().await;
+    //     let channel = construct_keep_callback_listener();
+    //     self.post_usb_request(USBRequest {
+    //         extra_action: ExtraAction::KeepFill(channel_number),
+    //         operation: request,
+    //         complete_action: CompleteAction::KeepResponse(channel.0),
+    //     })
+    //     .await;
+    //     channel.1
+    // }
 
     async fn check_self_status(&self) -> &Self {
         match *self.state.read().await {
