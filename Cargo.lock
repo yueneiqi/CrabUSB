@@ -55,7 +55,7 @@ checksum = "ace50bade8e6234aa140d9a2f552bbee1db4d353f69b8217bc503490fc1a9f26"
 [[package]]
 name = "axhid"
 version = "0.1.0"
-source = "git+https://github.com/arceos-usb/axhid.git#2623a9adbf00dd0ead2621db9a1fcc282f54e19c"
+source = "git+https://github.com/arceos-usb/axhid.git#39a8f6cbd84a638dfbb410bca3c7ff1b114e6378"
 dependencies = [
  "hidreport",
  "log",
@@ -534,7 +534,7 @@ checksum = "adb9e6ca4f869e1180728b7950e35922a7fc6397f7b641499e8f3ef06e50dc83"
 [[package]]
 name = "usb-descriptor-decoder"
 version = "0.1.0"
-source = "git+https://github.com/arceos-usb/usb-descriptor-decoder-rs.git#8ad024915ec448af58029bc807972f13c78757eb"
+source = "git+https://github.com/arceos-usb/usb-descriptor-decoder-rs.git#cc376abed06e471b202af91aa584efb2920cffae"
 dependencies = [
  "bit_field",
  "log",
