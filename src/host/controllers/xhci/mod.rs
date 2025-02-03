@@ -1,6 +1,6 @@
 use core::{
     cell::SyncUnsafeCell,
-    future::{Future, IntoFuture},
+    future::{join, Future, IntoFuture},
     mem,
     num::NonZeroUsize,
     ops::DerefMut,
@@ -15,12 +15,7 @@ use axhid::hidreport::hid::Item;
 use context::{DeviceContextList, ScratchpadBufferArray};
 use embassy_futures::block_on;
 use event_ring::EventRing;
-use futures::{
-    channel::oneshot,
-    future::{join, BoxFuture, Join},
-    stream::Repeat,
-    task::FutureObj,
-};
+use futures::{channel::oneshot, future::BoxFuture, stream::Repeat, task::FutureObj};
 use inner_urb::XHCICompleteAction;
 use log::{debug, error, info, trace, warn};
 use ring::Ring;
@@ -77,14 +72,13 @@ pub struct Receiver<const RINGBUF_SIZE: usize> {
     pub receiver: ArcAsyncRingBufCons<USBRequest, RINGBUF_SIZE>,
 }
 
-pub struct XHCIController<'a, O>
+pub struct XHCIController<'a, O, const RING_BUFFER_SIZE: usize>
 //had to poll controller it self!
 where
     'a: 'static,
     O: PlatformAbstractions + 'a,
-    [(); O::RING_BUFFER_SIZE]:,
 {
-    config: Arc<USBSystemConfig<O>>,
+    config: Arc<USBSystemConfig<O, RING_BUFFER_SIZE>>,
     //safety:regs MUST exist in mem otherwise would panic when construct
     regs: SyncUnsafeCell<RegistersBase>,
     ext_list: Option<RegistersExtList>,
@@ -94,19 +88,18 @@ where
     scratchpad_buf_arr: OnceCell<ScratchpadBufferArray<O>>,
     cmd: Mutex<Ring<O>>,
     event: SyncUnsafeCell<EventRing<O>>,
-    dev_ctx: RwLock<DeviceContextList<O, { O::RING_BUFFER_SIZE }>>,
-    devices: SyncUnsafeCell<Vec<Arc<USBDevice<'a, O>>>>,
-    requests: SyncUnsafeCell<Vec<Receiver<{ O::RING_BUFFER_SIZE }>>>,
+    dev_ctx: RwLock<DeviceContextList<O, RING_BUFFER_SIZE>>,
+    devices: SyncUnsafeCell<Vec<Arc<USBDevice<O, RING_BUFFER_SIZE>>>>,
+    requests: SyncUnsafeCell<Vec<Receiver<RING_BUFFER_SIZE>>>,
     finish_jobs: RwLock<BTreeMap<usize, XHCICompleteAction>>,
     extra_works: SyncUnsafeCell<BTreeMap<usize, USBRequest>>,
-    event_bus: Arc<EventBus<'a, O>>,
+    event_bus: Arc<EventBus<'a, O, RING_BUFFER_SIZE>>,
 }
 
-impl<'a, O> XHCIController<'a, O>
+impl<'a, O, const RING_BUFFER_SIZE: usize> XHCIController<'a, O, RING_BUFFER_SIZE>
 where
     'a: 'static,
     O: PlatformAbstractions + 'a,
-    [(); O::RING_BUFFER_SIZE]:,
 {
     fn chip_hardware_reset(&self) -> &Self {
         debug!("{TAG} Reset begin");
@@ -336,8 +329,7 @@ where
 
             {
                 use async_ringbuf::{traits::*, AsyncStaticRb};
-                let (prod, cons) =
-                    AsyncStaticRb::<USBRequest, { O::RING_BUFFER_SIZE }>::default().split();
+                let (prod, cons) = AsyncStaticRb::<USBRequest, RING_BUFFER_SIZE>::default().split();
 
                 unsafe { self.devices.get().as_mut_unchecked() }.push(
                     {
@@ -588,7 +580,7 @@ where
         }
     }
 
-    async fn assign_address_device(&self, device: &Arc<USBDevice<'a, O>>) {
+    async fn assign_address_device(&self, device: &Arc<USBDevice<O, RING_BUFFER_SIZE>>) {
         const CONTROL_DCI: usize = 1;
 
         let slot_id = self.enable_slot().await;
@@ -882,12 +874,15 @@ where
     }
 }
 
-impl<'a, O> Controller<'a, O> for XHCIController<'a, O>
+impl<'a, O, const RING_BUFFER_SIZE: usize> Controller<'a, O, RING_BUFFER_SIZE>
+    for XHCIController<'a, O, RING_BUFFER_SIZE>
 where
     O: PlatformAbstractions,
-    [(); O::RING_BUFFER_SIZE]:,
 {
-    fn new(config: Arc<USBSystemConfig<O>>, event_bus: Arc<EventBus<'a, O>>) -> Self
+    fn new(
+        config: Arc<USBSystemConfig<O, RING_BUFFER_SIZE>>,
+        event_bus: Arc<EventBus<'a, O, RING_BUFFER_SIZE>>,
+    ) -> Self
     where
         Self: Sized,
     {
@@ -956,27 +951,24 @@ where
         .initial_probe();
     }
 
-    fn device_accesses(&self) -> &Vec<Arc<USBDevice<'a, O>>> {
+    fn device_accesses(&self) -> &Vec<Arc<USBDevice<O, RING_BUFFER_SIZE>>> {
         unsafe { self.devices.get().as_ref_unchecked() }
     }
 
     fn workaround(&'a self) -> BoxFuture<'a, ()> {
-        async {
-            join(
-                async {
-                    loop {
-                        self.on_event_arrived().await
-                    }
-                },
-                async {
-                    loop {
-                        self.run_once().await
-                    }
-                },
-            )
-            .await;
-        }
-        .boxed()
+        let on_event_loop = async move {
+            loop {
+                self.on_event_arrived().await
+            }
+        };
+
+        let run_once_loop = async move {
+            loop {
+                self.run_once().await
+            }
+        };
+
+        join!(on_event_loop, run_once_loop).map(|_| ()).boxed() //TODO: FIX LOOP STRUCTURE
     }
 }
 

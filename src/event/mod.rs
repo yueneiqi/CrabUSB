@@ -8,41 +8,36 @@ use crate::{
     host::device::USBDevice,
 };
 
-pub struct EventBus<'a, O>
+pub struct EventBus<'a, O, const RING_BUFFER_SIZE: usize>
 where
     O: PlatformAbstractions,
-    [(); O::RING_BUFFER_SIZE]:,
 {
-    pub new_initialized_device: Delegate<'a, Arc<USBDevice<'a, O>>>,
-    pub pre_drop_device: Delegate<'a, Arc<USBDevice<'a, O>>>,
+    pub new_initialized_device: Delegate<'a, Arc<USBDevice<O, RING_BUFFER_SIZE>>>,
+    pub pre_drop_device: Delegate<'a, Arc<USBDevice<O, RING_BUFFER_SIZE>>>,
     pub new_interface: Delegate<
         'a,
         (
-            Box<dyn driver::driverapi::USBSystemDriverModule<'a, O>>,
+            Box<dyn driver::driverapi::USBSystemDriverModule<'a, O, RING_BUFFER_SIZE>>,
             Arc<RwLock<dyn USBSystemDriverModuleInstanceFunctionalInterface<'a, O>>>,
         ),
     >,
 }
 
-unsafe impl<'a, O> Sync for EventBus<'a, O>
+unsafe impl<'a, O, const RING_BUFFER_SIZE: usize> Sync for EventBus<'a, O, RING_BUFFER_SIZE>
 //safety: it wont mut
 where
-    O: PlatformAbstractions,
-    [(); O::RING_BUFFER_SIZE]:,
+    O: PlatformAbstractions
 {
 }
 
-unsafe impl<'a, O> Send for EventBus<'a, O>
-where
-    O: PlatformAbstractions,
-    [(); O::RING_BUFFER_SIZE]:,
+unsafe impl<'a, O, const RING_BUFFER_SIZE: usize> Send for EventBus<'a, O, RING_BUFFER_SIZE> where
+    O: PlatformAbstractions
 {
 }
 
-impl<'a, O> EventBus<'a, O>
+impl<'a, O, const RING_BUFFER_SIZE: usize> EventBus<'a, O, RING_BUFFER_SIZE>
 where
     O: PlatformAbstractions,
-    [(); O::RING_BUFFER_SIZE]:,
 {
     pub fn new() -> Self {
         Self {

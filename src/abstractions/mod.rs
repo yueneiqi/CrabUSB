@@ -17,7 +17,7 @@ pub trait PlatformAbstractions: Clone + Send + Sync + Sized {
 pub type InterruptRegister = dyn Fn(&dyn Fn()) + Send + Sync;
 
 #[derive(Clone)]
-pub struct USBSystemConfig<O>
+pub struct USBSystemConfig<O, const RING_BUFFER_SIZE: usize>
 where
     O: PlatformAbstractions,
 {

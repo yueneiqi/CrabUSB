@@ -15,11 +15,11 @@ use xhci::ring::trb::transfer;
 use super::ring::Ring;
 const NUM_EPS: usize = 32;
 
-pub struct DeviceContextList<O, const _DEVICE_REQUEST_BUFFER_SIZE: usize>
+pub struct DeviceContextList<O, const RING_BUFFER_SIZE: usize>
 where
     O: PlatformAbstractions,
 {
-    config: Arc<USBSystemConfig<O>>,
+    config: Arc<USBSystemConfig<O, RING_BUFFER_SIZE>>,
     pub dcbaa: SyncUnsafeCell<DMA<[u64; 256], O::DMA>>,
     pub device_ctx_inners: BTreeMap<u8, DeviceCtxInner<O>>,
 }
@@ -33,11 +33,11 @@ where
     pub transfer_rings: Vec<Ring<O>>,
 }
 
-impl<O, const _DEVICE_REQUEST_BUFFER_SIZE: usize> DeviceContextList<O, _DEVICE_REQUEST_BUFFER_SIZE>
+impl<O, const RING_BUFFER_SIZE: usize> DeviceContextList<O, RING_BUFFER_SIZE>
 where
     O: PlatformAbstractions,
 {
-    pub fn new(cfg: Arc<USBSystemConfig<O>>) -> Self {
+    pub fn new(cfg: Arc<USBSystemConfig<O, RING_BUFFER_SIZE>>) -> Self {
         Self {
             config: cfg.clone(),
             dcbaa: DMA::new([0u64; 256], 4096, cfg.os.dma_alloc()).into(),

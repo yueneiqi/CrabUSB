@@ -11,19 +11,21 @@ use crate::{
 
 use super::device::USBDevice;
 
-pub trait Controller<'a, O>: Send + Sync
+pub trait Controller<'a, O, const RING_BUFFER_SIZE: usize>: Send + Sync
 where
     O: PlatformAbstractions,
-    [(); O::RING_BUFFER_SIZE]:,
 {
-    fn new(config: Arc<USBSystemConfig<O>>, event_bus: Arc<EventBus<'a, O>>) -> Self
+    fn new(
+        config: Arc<USBSystemConfig<O, RING_BUFFER_SIZE>>,
+        event_bus: Arc<EventBus<'a, O, RING_BUFFER_SIZE>>,
+    ) -> Self
     where
         Self: Sized;
 
     fn init(&self);
 
     /// each device should able to access actual transfer function in controller
-    fn device_accesses(&self) -> &Vec<Arc<USBDevice<'a, O>>>;
+    fn device_accesses(&self) -> &Vec<Arc<USBDevice<O, RING_BUFFER_SIZE>>>;
 
     fn workaround(&'a self) -> BoxFuture<'a, ()>;
 }
@@ -32,15 +34,14 @@ match_cfg! {
     #[cfg(feature = "backend-xhci")]=>{
         mod xhci;
 
-        pub fn initialize_controller<'a, O>(
-            config: Arc<USBSystemConfig<O>>,
-            event_bus:Arc<EventBus<'a,O>>
-        ) -> Box<dyn Controller<'a, O>>
+        pub fn initialize_controller<'a, O,const RING_BUFFER_SIZE:usize>(
+            config: Arc<USBSystemConfig<O,RING_BUFFER_SIZE>>,
+            event_bus:Arc<EventBus<'a,O,RING_BUFFER_SIZE>>
+        ) -> Box<dyn Controller<'a, O,RING_BUFFER_SIZE>>
         where
         //wtf
             O: PlatformAbstractions+'static,
             'a:'static,
-             [(); O::RING_BUFFER_SIZE]:
         {
             Box::new(xhci::XHCIController::new(config,event_bus))
         }
@@ -60,12 +61,14 @@ match_cfg! {
 
 struct DummyController;
 
-impl<'a, O> Controller<'a, O> for DummyController
+impl<'a, O, const RING_BUFFER_SIZE: usize> Controller<'a, O, RING_BUFFER_SIZE> for DummyController
 where
     O: PlatformAbstractions,
-    [(); O::RING_BUFFER_SIZE]:,
 {
-    fn new(_config: Arc<USBSystemConfig<O>>, _evtbus: Arc<EventBus<'a, O>>) -> Self
+    fn new(
+        _config: Arc<USBSystemConfig<O, RING_BUFFER_SIZE>>,
+        _evtbus: Arc<EventBus<'a, O, RING_BUFFER_SIZE>>,
+    ) -> Self
     where
         Self: Sized,
     {
@@ -76,7 +79,7 @@ where
         panic!("dummy controller")
     }
 
-    fn device_accesses(&self) -> &Vec<Arc<USBDevice<'a, O>>> {
+    fn device_accesses(&self) -> &Vec<Arc<USBDevice<O, RING_BUFFER_SIZE>>> {
         panic!("dummy controller")
     }
 

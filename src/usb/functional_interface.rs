@@ -18,14 +18,16 @@ use crate::{
     host::device::USBDevice,
 };
 
-pub struct USBLayer<'a, O>
+pub struct USBLayer<'a, O, const RING_BUFFER_SIZE: usize>
 where
     O: PlatformAbstractions,
-    [(); O::RING_BUFFER_SIZE]:,
 {
-    config: Arc<USBSystemConfig<O>>,
-    eventbus: Arc<EventBus<'a, O>>,
-    pub driver_modules: BTreeMap<String, Box<dyn driver::driverapi::USBSystemDriverModule<'a, O>>>,
+    config: Arc<USBSystemConfig<O, RING_BUFFER_SIZE>>,
+    eventbus: Arc<EventBus<'a, O, RING_BUFFER_SIZE>>,
+    pub driver_modules: BTreeMap<
+        String,
+        Box<dyn driver::driverapi::USBSystemDriverModule<'a, O, RING_BUFFER_SIZE>>,
+    >,
     pub functional_interfaces: RwLock<
         BTreeMap<
             &'a str,
@@ -43,13 +45,15 @@ where
     >,
 }
 
-impl<'a, O> USBLayer<'a, O>
+impl<'a, O, const RING_BUFFER_SIZE: usize> USBLayer<'a, O, RING_BUFFER_SIZE>
 where
     'a: 'static,
     O: PlatformAbstractions + 'static,
-    [(); O::RING_BUFFER_SIZE]:,
 {
-    pub fn new(config: Arc<USBSystemConfig<O>>, evt_bus: Arc<EventBus<'a, O>>) -> Self {
+    pub fn new(
+        config: Arc<USBSystemConfig<O, RING_BUFFER_SIZE>>,
+        evt_bus: Arc<EventBus<'a, O, RING_BUFFER_SIZE>>,
+    ) -> Self {
         let usblayer = Self {
             config,
             driver_modules: BTreeMap::new(),
@@ -59,10 +63,7 @@ where
         usblayer
     }
 
-    pub fn new_device_initialized(&self, device: &Arc<USBDevice<'a, O>>)
-    where
-        [(); O::RING_BUFFER_SIZE]:,
-    {
+    pub fn new_device_initialized(&self, device: &Arc<USBDevice<O, RING_BUFFER_SIZE>>) {
         self.driver_modules
             .values()
             .filter_map(|module| {

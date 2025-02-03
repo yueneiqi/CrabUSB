@@ -12,17 +12,15 @@ use crate::{
     host::device::USBDevice,
 };
 
-pub trait USBSystemDriverModule<'a, O>: Send + Sync
+pub trait USBSystemDriverModule<'a, O, const RING_BUFFER_SIZE: usize>: Send + Sync
 where
     O: PlatformAbstractions,
 {
     fn should_active(
         &self,
-        device: &Arc<USBDevice<'a, O>>,
-        config: &Arc<USBSystemConfig<O>>,
-    ) -> Option<Arc<RwLock<dyn USBSystemDriverModuleInstanceFunctionalInterface<'a, O>>>>
-    where
-        [(); O::RING_BUFFER_SIZE]:;
+        device: &Arc<USBDevice<O, RING_BUFFER_SIZE>>,
+        config: &Arc<USBSystemConfig<O, RING_BUFFER_SIZE>>,
+    ) -> Option<Arc<RwLock<dyn USBSystemDriverModuleInstanceFunctionalInterface<'a, O>>>>;
 
     fn preload_module(&self);
 

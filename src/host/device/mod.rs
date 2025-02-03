@@ -33,12 +33,11 @@ use crate::{
     },
 };
 
-pub struct USBDevice<'a, O>
+pub struct USBDevice<O, const RING_BUFFER_SIZE: usize>
 where
     O: PlatformAbstractions,
-    [(); O::RING_BUFFER_SIZE]:,
 {
-    pub config: Arc<USBSystemConfig<O>>,
+    pub config: Arc<USBSystemConfig<O, RING_BUFFER_SIZE>>,
     pub state: Arc<RwLock<DeviceState>>,
     pub slot_id: OnceCell<u8>,
     pub vendor_id: OnceCell<u16>,
@@ -46,7 +45,7 @@ where
     pub descriptor: OnceCell<Arc<TopologicalUSBDescriptorRoot>>,
     pub topology_path: TopologyRoute,
     configure_sem: Arc<Semaphore>,
-    request_channel: RwLock<ArcAsyncRingBufPord<USBRequest, { O::RING_BUFFER_SIZE }>>,
+    request_channel: RwLock<ArcAsyncRingBufPord<USBRequest, RING_BUFFER_SIZE>>,
 }
 
 pub enum DeviceState {
@@ -70,14 +69,13 @@ pub type ArcAsyncRingBufCons<T, const N: usize> = async_ringbuf::wrap::AsyncWrap
 #[derive(Debug)]
 pub struct ConfigureSemaphore(SemaphoreGuardArc);
 
-impl<O> USBDevice<'_, O>
+impl<O, const RING_BUFFER_SIZE: usize> USBDevice<O, RING_BUFFER_SIZE>
 where
     O: PlatformAbstractions,
-    [(); O::RING_BUFFER_SIZE]:,
 {
     pub fn new(
-        cfg: Arc<USBSystemConfig<O>>,
-        sender: ArcAsyncRingBufPord<USBRequest, { O::RING_BUFFER_SIZE }>,
+        cfg: Arc<USBSystemConfig<O, RING_BUFFER_SIZE>>,
+        sender: ArcAsyncRingBufPord<USBRequest, RING_BUFFER_SIZE>,
     ) -> Self {
         USBDevice {
             state: RwLock::new(DeviceState::Probed).into(),

@@ -3,12 +3,10 @@
     allocator_api,
     let_chains,
     exclusive_wrapper,
-    async_closure,
     ptr_as_ref_unchecked,
     fn_traits,
     sync_unsafe_cell,
     future_join,
-    generic_const_exprs,
     never_type
 )]
 
@@ -37,28 +35,26 @@ pub mod event;
 mod host;
 pub mod usb;
 
-pub struct USBSystem<'a, O>
+pub struct USBSystem<'a, O, const RING_BUFFER_SIZE: usize>
 where
     O: PlatformAbstractions + 'static,
     'a: 'static,
-    [(); O::RING_BUFFER_SIZE]:,
 {
-    config: Arc<USBSystemConfig<O>>,
-    controller: Box<dyn Controller<'a, O>>,
-    usb_layer: USBLayer<'a, O>,
-    event_bus: Arc<EventBus<'a, O>>,
+    config: Arc<USBSystemConfig<O, RING_BUFFER_SIZE>>,
+    controller: Box<dyn Controller<'a, O, RING_BUFFER_SIZE>>,
+    usb_layer: USBLayer<'a, O, RING_BUFFER_SIZE>,
+    event_bus: Arc<EventBus<'a, O, RING_BUFFER_SIZE>>,
 }
 
-impl<'a, O> USBSystem<'a, O>
+impl<'a, O, const RING_BUFFER_SIZE: usize> USBSystem<'a, O, RING_BUFFER_SIZE>
 where
     O: PlatformAbstractions + 'static,
     'a: 'static,
-    [(); O::RING_BUFFER_SIZE]:,
 {
-    pub fn new(config: USBSystemConfig<O>) -> Self {
-        let config: Arc<USBSystemConfig<O>> = config.into();
+    pub fn new(config: USBSystemConfig<O, RING_BUFFER_SIZE>) -> Self {
+        let config: Arc<USBSystemConfig<O, RING_BUFFER_SIZE>> = config.into();
         let event_bus = Arc::new(EventBus::new());
-        let controller: Box<dyn Controller<'a, O>> =
+        let controller: Box<dyn Controller<'a, O, RING_BUFFER_SIZE>> =
             host::controllers::initialize_controller(config.clone(), event_bus.clone());
         let usb_layer = USBLayer::new(config.clone(), event_bus.clone());
 
@@ -73,7 +69,7 @@ where
     pub fn plug_driver_module(
         &mut self,
         name: String,
-        mut module: Box<dyn driver::driverapi::USBSystemDriverModule<'a, O>>,
+        mut module: Box<dyn driver::driverapi::USBSystemDriverModule<'a, O, RING_BUFFER_SIZE>>,
     ) -> &mut Self {
         module.as_mut().preload_module(); //add some hooks?
         self.usb_layer.driver_modules.insert(name, module);
