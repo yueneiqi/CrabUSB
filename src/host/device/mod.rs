@@ -5,7 +5,7 @@ use alloc::{borrow::ToOwned, sync::Arc};
 use async_lock::{OnceCell, RwLock, Semaphore, SemaphoreGuardArc};
 use async_ringbuf::{traits::AsyncProducer, AsyncRb};
 use futures::{channel::oneshot, FutureExt};
-use log::{debug, trace};
+use log::{debug, info, trace};
 use nosy::Sink;
 use usb_descriptor_decoder::descriptors::{
     parser::RawDescriptorParser, topological_desc::TopologicalUSBDescriptorRoot,
@@ -162,6 +162,7 @@ where
     }
 
     pub async fn request_assign(&self) {
+        info!("device request assign!");
         {
             let sem = self.configure_sem.acquire_arc().await;
             self.post_usb_request(USBRequest {

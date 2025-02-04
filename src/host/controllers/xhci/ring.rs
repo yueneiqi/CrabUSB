@@ -54,17 +54,20 @@ impl<O: PlatformAbstractions> Ring<O> {
         } else {
             trb.clear_cycle_bit();
         }
-        
+
         self.enque_trb(trb.into_raw())
     }
 
     pub fn enque_trb(&mut self, trb: TrbData) -> usize {
         self.trbs[self.i].copy_from_slice(&trb);
         let addr = self.trbs[self.i].as_ptr() as usize;
+
+        #[cfg(feature = "trace_xhci_enque_trb")]
         trace!(
-            "enqueued {} @{:#X}\n{:x}\n{:x}\n{:x}\n{:x}\n------------------------------------------------",
-            self.i, addr, trb[0], trb[1], trb[2], trb[3]
-        );
+                "enqueued {} @{:#X}\n{:x}\n{:x}\n{:x}\n{:x}\n------------------------------------------------",
+                self.i, addr, trb[0], trb[1], trb[2], trb[3]
+            );
+
         self.next_index();
         addr
     }
@@ -84,13 +87,20 @@ impl<O: PlatformAbstractions> Ring<O> {
         if self.link && self.i >= len - 1 {
             self.i = 0;
             need_link = true;
-            trace!("flip and link!")
+
+            #[cfg(feature = "trace_xhci_enque_trb")]
+            {
+                trace!("flip and link!")
+            }
         } else if self.i >= len {
             self.i = 0;
         }
 
         if need_link {
-            trace!("link!");
+            #[cfg(feature = "trace_xhci_enque_trb")]
+            {
+                trace!("link!");
+            }
             let address = self.trbs[0].as_ptr() as usize;
             let mut link = Link::new();
             link.set_ring_segment_pointer(address as u64)

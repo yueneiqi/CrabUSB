@@ -9,6 +9,7 @@ use futures::{
     future::{BoxFuture, SelectOk},
     task::Spawn,
 };
+use log::info;
 use usb_descriptor_decoder::descriptors::desc_device::Device;
 
 use crate::{
@@ -78,5 +79,7 @@ where
                     .or_insert(Vec::new())
                     .push(function);
             });
+
+        info!("initialized new device!");
     }
 }

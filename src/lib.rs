@@ -25,6 +25,7 @@ use futures::{
 };
 use host::controllers::Controller;
 use lazy_static::lazy_static;
+use log::info;
 use usb::functional_interface::USBLayer;
 
 extern crate alloc;
@@ -79,6 +80,7 @@ where
 
     pub fn stage_1_start_controller(&self) -> &Self {
         self.controller.init();
+        info!("controller init complete!");
         self
     }
 
@@ -89,10 +91,12 @@ where
         });
 
         //TODO: more, like device descruction.etc
+
+        info!("usb layer init complete!");
         self
     }
 
-    pub async fn stage_3_initial_controller_polling_and_deivces(&self) -> &Self {
+    async fn inner_stage_3_initial_controller_polling_and_deivces(&self) {
         join_all(
             self.controller
                 .device_accesses()
@@ -108,17 +112,18 @@ where
         )
         .await;
 
-        self
-    }
-
-    pub fn block_stage_3(&self) -> &Self {
-        block_on(self.stage_3_initial_controller_polling_and_deivces())
+        info!("controller poll and initial device init complete!");
     }
 
     pub async fn async_run(&'a self) {
         //TODO structure run logic
         // join(self.controller.workaround(), self.usb_layer.workaround()).await
-        self.controller.workaround().await;
+        info!("usb system workaround...");
+        join(
+            self.inner_stage_3_initial_controller_polling_and_deivces(),
+            self.controller.workaround(),
+        )
+        .await;
     }
 
     pub fn block_run(&'a self) {

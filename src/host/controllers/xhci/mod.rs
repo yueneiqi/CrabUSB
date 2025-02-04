@@ -348,6 +348,11 @@ where
             }
         }
 
+        info!(
+            "initial probe completed! device count:{}",
+            unsafe { self.devices.get().as_ref() }.unwrap().len()
+        );
+
         self
     }
 
@@ -546,13 +551,8 @@ where
     async fn post_transfer(&self, req: USBRequest, slot: &OnceCell<u8>) {
         match req.operation {
             crate::usb::operations::RequestedOperation::Control(control_transfer) => {
-                let key = self
-                    .control_transfer(*unsafe { slot.get_unchecked() }, control_transfer)
+                self.post_control_transfer(control_transfer, req.complete_action, slot) //purpose: avoid cycle dependency
                     .await;
-                self.finish_jobs
-                    .write()
-                    .await
-                    .insert(key, req.complete_action.into());
             }
             crate::usb::operations::RequestedOperation::Bulk(bulk_transfer) => todo!(),
             crate::usb::operations::RequestedOperation::Interrupt(interrupt_transfer) => todo!(),
@@ -578,6 +578,18 @@ where
                 debug!("{TAG}-device {:#?} transfer nope!", slot)
             }
         }
+    }
+
+    async fn post_control_transfer(
+        &self,
+        control_transfer: ControlTransfer,
+        cmp: CompleteAction,
+        slot: &OnceCell<u8>,
+    ) {
+        let key = self
+            .control_transfer(*unsafe { slot.get_unchecked() }, control_transfer)
+            .await;
+        self.finish_jobs.write().await.insert(key, cmp.into());
     }
 
     async fn assign_address_device(&self, device: &Arc<USBDevice<O, RING_BUFFER_SIZE>>) {
@@ -670,29 +682,24 @@ where
             let buffer = DMA::new_vec(0u8, 8, 64, self.config.os.dma_alloc());
             let (sender, receiver) = oneshot::channel();
 
-            self.post_transfer(
-                USBRequest {
-                    extra_action: Default::default(),
-                    operation: crate::usb::operations::RequestedOperation::Control(
-                        ControlTransfer {
-                            request_type: bmRequestType::new(
-                                Direction::In,
-                                DataTransferType::Standard,
-                                Recipient::Device,
-                            ),
-                            request: bRequest::Standard(bRequestStandard::GetDescriptor),
-                            index: 0,
-                            value: construct_control_transfer_type(
-                                USBStandardDescriptorTypes::Device as u8,
-                                0,
-                            )
-                            .bits(),
-                            data: Some((buffer.addr(), buffer.length_for_bytes())),
-                            response: false,
-                        },
+            self.post_control_transfer(
+                ControlTransfer {
+                    request_type: bmRequestType::new(
+                        Direction::In,
+                        DataTransferType::Standard,
+                        Recipient::Device,
                     ),
-                    complete_action: CompleteAction::SimpleResponse(sender),
+                    request: bRequest::Standard(bRequestStandard::GetDescriptor),
+                    index: 0,
+                    value: construct_control_transfer_type(
+                        USBStandardDescriptorTypes::Device as u8,
+                        0,
+                    )
+                    .bits(),
+                    data: Some((buffer.addr(), buffer.length_for_bytes())),
+                    response: false,
                 },
+                CompleteAction::SimpleResponse(sender),
                 &device.slot_id,
             )
             .await;
@@ -968,7 +975,7 @@ where
             }
         };
 
-        join!(on_event_loop, run_once_loop).map(|_| ()).boxed() //TODO: FIX LOOP STRUCTURE
+        join!(on_event_loop, run_once_loop).map(|_| ()).boxed()
     }
 }
 

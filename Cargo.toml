@@ -11,6 +11,7 @@ packed-drivers = ["axhid"]
 cotton-frontend=["cotton-usb-host"]
 backend-xhci = ["xhci"]
 parallel = []
+trace_xhci_enque_trb=[]
 
 [dependencies]
 xhci = {version="0.9",optional=true}
