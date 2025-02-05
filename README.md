@@ -9,4 +9,4 @@ A Async USB Host Driver Framework, Includes:
 
 ## Todo & Doing
 - [ ] migrating codebase from [arceos_experiment](https://github.com/arceos-usb/arceos_experiment.git)
-- [ ] reconstruct code to introduce async io
+- [x] reconstruct code to introduce async io
