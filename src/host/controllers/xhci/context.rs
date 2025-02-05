@@ -79,7 +79,7 @@ where
                 transfer_rings: {
                     (0..num_ep)
                         .map(|_| Ring::new(os.clone(), 32, true))
-                        .map(Self::prepare_transfer_ring)
+                        // .map(Self::prepare_transfer_ring) //only for non control endpoint
                         .collect()
                 },
             },

@@ -65,12 +65,13 @@ impl TopologyRoute {
         self.get_hub_index_at_tier(0)
     }
 
+    //TODO: Thid method is Broken!
     pub fn route_string(&self) -> u32 {
         let mut r = self.clone();
         for idx in 0..4 {
             let get_hub_index_at_tier = r.get_hub_index_at_tier(idx);
             if get_hub_index_at_tier != 0 {
-                r.write_hub_tier(idx, get_hub_index_at_tier - 1);
+                r.write_hub_tier(idx, get_hub_index_at_tier);
             }
         }
         r.0

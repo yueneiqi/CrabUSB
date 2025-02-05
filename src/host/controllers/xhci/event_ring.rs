@@ -77,6 +77,12 @@ where
             return None;
         }
 
+        if let Allowed::CommandCompletion(c) = allowed
+            && let Ok(CompletionCode::Invalid) = c.completion_code()
+        {
+            return None;
+        }
+
         fence(Ordering::SeqCst);
 
         let cycle = self.ring.inc_deque();

@@ -307,7 +307,7 @@ where
     }
 
     fn initial_probe(&self) -> &Self {
-        for (port_id, port) in unsafe { self.regs.get().as_mut_unchecked() }
+        for (port_idx, port) in unsafe { self.regs.get().as_mut_unchecked() }
             .port_register_set
             .into_iter() //safety: checked, is read_volatile
             .enumerate()
@@ -315,7 +315,7 @@ where
             let portsc = port.portsc;
             info!(
                 "{TAG} Port {}: Enabled: {}, Connected: {}, Speed {}, Power {}",
-                port_id,
+                port_idx,
                 portsc.port_enabled_disabled(),
                 portsc.current_connect_status(),
                 portsc.port_speed(),
@@ -336,7 +336,7 @@ where
                         let mut usbdevice = USBDevice::new(self.config.clone(), prod);
                         usbdevice
                             .topology_path
-                            .append_port_number((port_id + 1) as _);
+                            .append_port_number((port_idx + 1) as _);
                         usbdevice
                     }
                     .into(),
@@ -375,17 +375,18 @@ where
         self
     }
 
-    // async fn test_cmd(&mut self) -> &mut Self {
-    //     //TODO:assert like this in runtime if build with debug mode?
-    //     debug!("{TAG} Test command ring");
-    //     for _ in 0..3 {
-    //         let completion = self
-    //             .post_cmd(command::Allowed::Noop(command::Noop::new()))
-    //             .unwrap();
-    //     }
-    //     debug!("{TAG} Command ring ok");
-    //     self
-    // }
+    ///broken, read error on waiting!
+    fn test_cmd(&self) -> &Self {
+        //TODO:assert like this in runtime if build with debug mode?
+        debug!("{TAG} Test command ring");
+        for _ in 0..3 {
+            let completion = self
+                .post_cmd_busy(command::Allowed::Noop(command::Noop::new()))
+                .unwrap();
+        }
+        debug!("{TAG} Command ring ok");
+        self
+    }
 
     fn ring_db(&self, slot: u8, stream: Option<u16>, target: Option<u8>) {
         // might waste efficient? or actually low cost compare to actual transfer(in hardware)
@@ -407,6 +408,48 @@ where
                     unsafe { self.event.get().as_ref_unchecked() }.erdp(),
                 );
             });
+    }
+
+    fn post_cmd_busy(
+        &self,
+        mut trb: command::Allowed,
+    ) -> Result<CommandCompletion, CompletionCode> {
+        let addr = self.cmd.try_lock().unwrap().enque_command(trb);
+
+        self.ring_db(0, 0.into(), 0.into());
+        fence(Ordering::Release);
+
+        let addr = addr as _;
+        debug!("Wait result");
+        loop {
+            if let Some((event, cycle)) = unsafe { self.event.get().read_volatile() }.next() {
+                match event {
+                    event::Allowed::CommandCompletion(c) => {
+                        self.update_erdp();
+                        let mut code = CompletionCode::Invalid;
+                        if let Ok(c) = c.completion_code() {
+                            code = c;
+                        } else {
+                            continue;
+                        }
+                        trace!(
+                            "[CMD] << {code:#?} @{:X} got result, cycle {}",
+                            c.command_trb_pointer(),
+                            c.cycle_bit()
+                        );
+                        if c.command_trb_pointer() != addr {
+                            continue;
+                        }
+
+                        if let CompletionCode::Success = code {
+                            return Ok(c);
+                        }
+                        return Err(code);
+                    }
+                    _ => warn!("event: {:?}", event),
+                }
+            }
+        }
     }
 
     async fn post_command(&self, trb: command::Allowed) -> CommandCompletion {
@@ -600,7 +643,9 @@ where
         let _ = device.slot_id.set(slot_id).await;
 
         self.dev_ctx.write().await.new_slot(slot_id, 32); //TODO: basically, now a days all usb device  should had 32 endpoints, but for now let's just hardcode it...
-        let port_speed = self.get_speed(device.topology_path.get_hub_index_at_tier(0));
+        let idx = device.topology_path.port_idx();
+        trace!("idx is {}", idx);
+        let port_speed = self.get_speed(idx);
         let default_max_packet_size = parse_default_max_packet_size_from_speed(port_speed);
         let context_addr = {
             let (control_channel_addr, cycle_bit) = {
@@ -629,7 +674,7 @@ where
             slot_context.clear_hub();
             slot_context.set_route_string({
                 let rs = device.topology_path.route_string();
-                assert_eq!(rs, 0); // for now, not support more hub ,so hardcode as 0.//TODO: generate route string
+                assert_eq!(rs, 1); // for now, not support more hub ,so hardcode as 0.//TODO: generate route string
                 rs
             });
             slot_context.set_context_entries(1);
@@ -657,8 +702,11 @@ where
             endpoint_0.set_mult(0);
             endpoint_0.set_error_count(3);
 
+            trace!("{:#?}", context_mut);
+
             (context_mut as *const Input<16>).addr() as u64
         };
+
         fence(Ordering::Release);
         {
             let request_result = self
@@ -955,6 +1003,8 @@ where
                 .setup_scratchpads(),
         )
         .start()
+        .reset_ports()
+        // .test_cmd()
         .initial_probe();
     }
 
