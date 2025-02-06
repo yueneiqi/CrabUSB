@@ -71,26 +71,37 @@ where
     ) {
         let os = &self.config.os;
 
+        let out_ctx = DMA::new(Device::new_64byte(), 4096, os.dma_alloc());
+        let dcbaap = out_ctx.addr();
+
         self.device_ctx_inners.insert(
             slot,
             DeviceCtxInner {
-                out_ctx: { DMA::new(Device::new_64byte(), 4096, os.dma_alloc()) },
                 in_ctx: { DMA::new(Input64Byte::new_64byte(), 4096, os.dma_alloc()) },
+                out_ctx,
                 transfer_rings: {
                     (0..num_ep)
-                        .map(|_| Ring::new(os.clone(), 32, true))
-                        // .map(Self::prepare_transfer_ring) //only for non control endpoint
+                        .map(|i| (i, Ring::new(os.clone(), 32, true)))
+                        .map(|(i, r)| {
+                            // if i == 0 {
+                            // r
+                            // } else {
+                            Self::prepare_transfer_ring(r)
+                            // }
+                        }) //only for non control endpoint
                         .collect()
                 },
             },
         );
+        let get_mut = self.dcbaa.get_mut();
+        get_mut[slot as usize] = dcbaap as _;
     }
 
     fn prepare_transfer_ring(mut r: Ring<O>) -> Ring<O> {
         //in our code, the init state of transfer ring always has ccs = 0, so we use ccs =1 to fill transfer ring
-        let mut normal = transfer::Normal::default();
-        normal.set_cycle_bit();
-        r.enque_trbs_no_check(vec![normal.into_raw(); r.len() - 1]); //the n'th is link trb
+        let mut norm = transfer::Normal::default();
+        norm.set_cycle_bit();
+        r.enque_trbs_no_check(vec![norm.into_raw(); r.len() - 1]); //the n'th is link trb
         r
     }
 }

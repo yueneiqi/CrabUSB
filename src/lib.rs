@@ -25,7 +25,7 @@ use futures::{
 };
 use host::controllers::Controller;
 use lazy_static::lazy_static;
-use log::info;
+use log::{info, trace};
 use usb::functional_interface::USBLayer;
 
 extern crate alloc;

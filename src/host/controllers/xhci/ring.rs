@@ -62,7 +62,7 @@ impl<O: PlatformAbstractions> Ring<O> {
         self.trbs[self.i].copy_from_slice(&trb);
         let addr = self.trbs[self.i].as_ptr() as usize;
 
-        #[cfg(feature = "trace_xhci_enque_trb")]
+        // #[cfg(feature = "trace_xhci_enque_trb")]
         trace!(
                 "enqueued {} @{:#X}\n{:x}\n{:x}\n{:x}\n{:x}\n------------------------------------------------",
                 self.i, addr, trb[0], trb[1], trb[2], trb[3]
@@ -74,7 +74,9 @@ impl<O: PlatformAbstractions> Ring<O> {
 
     pub fn enque_trbs_no_check(&mut self, trb: Vec<TrbData>) {
         for ele in trb {
-            self.enque_trb(ele);
+            self.trbs[self.i].copy_from_slice(&ele);
+
+            self.next_index();
         }
     }
 
@@ -87,19 +89,17 @@ impl<O: PlatformAbstractions> Ring<O> {
         if self.link && self.i >= len - 1 {
             self.i = 0;
             need_link = true;
-
-            #[cfg(feature = "trace_xhci_enque_trb")]
-            {
-                trace!("flip and link!")
-            }
         } else if self.i >= len {
             self.i = 0;
         }
 
         if need_link {
-            #[cfg(feature = "trace_xhci_enque_trb")]
             {
-                trace!("link!");
+                trace!(
+                    "link! current cycle: {}, after link:{}",
+                    self.cycle,
+                    !self.cycle
+                );
             }
             let address = self.trbs[0].as_ptr() as usize;
             let mut link = Link::new();

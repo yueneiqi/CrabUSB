@@ -31,4 +31,5 @@ pub enum WakeMethod {
     Interrupt(Arc<InterruptRegister>),
     ///remember: increase permit on event. consumer side would drop every permit but not return it!
     Timer(Arc<Semaphore>),
+    Yield,
 }

@@ -13,9 +13,14 @@ use async_lock::{Mutex, OnceCell, RwLock};
 use async_ringbuf::traits::{AsyncConsumer, AsyncProducer};
 use axhid::hidreport::hid::Item;
 use context::{DeviceContextList, ScratchpadBufferArray};
-use embassy_futures::block_on;
+use embassy_futures::{block_on, yield_now};
 use event_ring::EventRing;
-use futures::{channel::oneshot, future::BoxFuture, stream::Repeat, task::FutureObj};
+use futures::{
+    channel::oneshot,
+    future::{select_ok, BoxFuture},
+    stream::Repeat,
+    task::FutureObj,
+};
 use inner_urb::XHCICompleteAction;
 use log::{debug, error, info, trace, warn};
 use ring::Ring;
@@ -23,7 +28,7 @@ use ringbuf::traits::{Consumer, Split};
 use usb_descriptor_decoder::descriptors::USBStandardDescriptorTypes;
 use xhci::{
     accessor::Mapper,
-    context::{Input, InputHandler},
+    context::{DeviceHandler, EndpointState, Input, InputHandler},
     extended_capabilities::XhciSupportedProtocol,
     ring::trb::{
         command::{self},
@@ -388,13 +393,19 @@ where
         self
     }
 
+    #[inline]
     fn ring_db(&self, slot: u8, stream: Option<u16>, target: Option<u8>) {
         // might waste efficient? or actually low cost compare to actual transfer(in hardware)
+        trace!("dsi:{}", slot);
         unsafe { self.regs.get().as_mut_unchecked() }
             .doorbell
             .update_volatile_at(slot as _, |r| {
-                stream.map(|stream| r.set_doorbell_stream_id(stream));
-                target.map(|target| r.set_doorbell_target(target));
+                stream.inspect(|stream| {
+                    r.set_doorbell_stream_id(*stream);
+                });
+                target.inspect(|target| {
+                    r.set_doorbell_target(*target);
+                });
             });
     }
 
@@ -516,7 +527,10 @@ where
                 .then(|mut write| async move { write.remove(&addr).unwrap() })
                 .then(|action| async move {
                     match action {
-                        XHCICompleteAction::CommandCallback(sender) => sender.send(cmp),
+                        XHCICompleteAction::CommandCallback(sender) => {
+                            trace!("sending callback");
+                            sender.send(cmp)
+                        }
                         _ => {
                             panic!("do not call command completion on transfer event!")
                         }
@@ -611,10 +625,10 @@ where
                         )
                     });
                 self.assign_address_device(dev).await;
+                trace!("assign address device complete!");
                 if let CompleteAction::DropSem(sem) = req.complete_action {
                     drop(sem);
                 } else {
-                    todo!("restruct urb system in xhci!")
                 }
             }
             crate::usb::operations::RequestedOperation::NOOP => {
@@ -691,6 +705,7 @@ where
             endpoint_0.set_max_packet_size(default_max_packet_size);
             endpoint_0.set_max_burst_size(0);
             endpoint_0.set_error_count(3);
+            trace!("control ring addr: {:x}", control_channel_addr);
             endpoint_0.set_tr_dequeue_pointer(control_channel_addr);
             if cycle_bit {
                 endpoint_0.set_dequeue_cycle_state();
@@ -702,7 +717,7 @@ where
             endpoint_0.set_mult(0);
             endpoint_0.set_error_count(3);
 
-            trace!("{:#?}", context_mut);
+            // trace!("{:#?}", context_mut);
 
             (context_mut as *const Input<16>).addr() as u64
         };
@@ -716,6 +731,7 @@ where
                         .set_input_context_pointer(context_addr),
                 ))
                 .await;
+            trace!("got result: {:?}", request_result);
             assert_eq!(
                 RequestResult::Success,
                 Into::<RequestResult>::into(request_result.completion_code().unwrap()),
@@ -723,6 +739,9 @@ where
                 request_result
             );
         }
+
+        self.trace_dump_context(slot_id);
+
         fence(Ordering::Release);
 
         let actual_speed = {
@@ -837,6 +856,27 @@ where
         request_result.slot_id()
     }
 
+    fn trace_dump_context(&self, slot: u8) {
+        let binding = self.dev_ctx.try_read().unwrap();
+        let dev = &binding.device_ctx_inners.get(&slot).unwrap().out_ctx;
+        trace!(
+            "trace dump ctx at slot {}:state is {:?}",
+            slot,
+            DeviceHandler::slot(&**dev).slot_state()
+        );
+        for i in 1..32 {
+            if let EndpointState::Disabled = dev.endpoint(i).endpoint_state() {
+                continue;
+            }
+            trace!(
+                "  ep dci {}: {:?}-type is {:?}",
+                i,
+                dev.endpoint(i).endpoint_state(),
+                dev.endpoint(i).endpoint_type()
+            );
+        }
+    }
+
     async fn disable_slot(&mut self, _slot: u8) -> Result<RequestResult, u8> {
         todo!()
     }
@@ -892,6 +932,7 @@ where
 
         let trb_pointers: Vec<usize> = {
             let mut writer = self.dev_ctx.write().await;
+            trace!("fetch ring at slot{}", slot);
             let ring = writer
                 .write_transfer_ring(slot, 0)
                 .expect("initialization on transfer rings got some issue, fixit.");
@@ -916,16 +957,25 @@ where
         }
 
         fence(Ordering::Release);
-        self.ring_db(slot, None, 1.into());
+        self.ring_db(slot, None, Some(1));
 
         trb_pointers.last().unwrap().to_owned()
     }
 
     async fn wake_event_ring(&self) {
-        if let WakeMethod::Timer(sem) = &self.config.wake_method {
-            sem.acquire().await.forget();
+        match &self.config.wake_method {
+            WakeMethod::Timer(semaphore) => loop {
+                semaphore.acquire().await.forget();
+                unsafe { self.event.get().as_ref_unchecked() }.wake();
+            },
+            WakeMethod::Yield => loop {
+                unsafe { self.event.get().as_ref_unchecked() }.wake();
+                yield_now().await;
+            },
+            WakeMethod::Interrupt(_) => {
+                unsafe { self.event.get().as_ref_unchecked() }.wake();
+            }
         }
-        unsafe { self.event.get().as_ref_unchecked() }.wake();
     }
 }
 
@@ -1025,7 +1075,14 @@ where
             }
         };
 
-        join!(on_event_loop, run_once_loop).map(|_| ()).boxed()
+        if let WakeMethod::Interrupt(_) = &self.config.wake_method {
+            join!(on_event_loop, run_once_loop).map(|_| ()).boxed()
+        } else {
+            let event_ring_waker = self.wake_event_ring();
+            join!(on_event_loop, run_once_loop, event_ring_waker)
+                .map(|_| ())
+                .boxed()
+        }
     }
 }
 

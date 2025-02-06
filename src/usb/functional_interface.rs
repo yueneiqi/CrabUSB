@@ -1,9 +1,5 @@
 use alloc::{boxed::Box, collections::btree_map::BTreeMap, string::String, sync::Arc, vec::Vec};
 use async_lock::{OnceCell, RwLock};
-use embassy_executor::{
-    raw::{Executor, TaskPool},
-    Spawner,
-};
 use embassy_futures::join::JoinArray;
 use futures::{
     future::{BoxFuture, SelectOk},

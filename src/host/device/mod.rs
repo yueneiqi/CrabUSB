@@ -172,6 +172,7 @@ where
             })
             .await;
         }
+        trace!("device initialize complete, now request device desc...");
 
         {
             let sem = self.configure_sem.acquire_arc().await;
