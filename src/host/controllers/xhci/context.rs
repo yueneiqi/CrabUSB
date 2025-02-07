@@ -2,14 +2,15 @@ use core::cell::SyncUnsafeCell;
 use core::usize;
 
 use crate::abstractions::dma::DMA;
-use crate::abstractions::{PlatformAbstractions, USBSystemConfig};
+use crate::abstractions::{PlatformAbstractions, SystemWordWide, USBSystemConfig};
 
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
-use xhci::context::Device64Byte;
-use xhci::context::{Device, Input64Byte};
+use core::ops::{Deref, DerefMut};
+use xhci::context::{Device, Device32Byte, DeviceHandler, Input64Byte, InputHandler};
+use xhci::context::{Device64Byte, Input32Byte};
 use xhci::ring::trb::transfer;
 
 use super::ring::Ring;
@@ -28,9 +29,99 @@ pub struct DeviceCtxInner<O>
 where
     O: PlatformAbstractions,
 {
-    pub out_ctx: DMA<Device64Byte, O::DMA>,
-    pub in_ctx: DMA<Input64Byte, O::DMA>,
+    pub out_ctx: DeviceCtx<O>,
+    pub in_ctx: InputCtx<O>,
     pub transfer_rings: Vec<Ring<O>>,
+}
+
+pub enum InputCtx<O>
+where
+    O: PlatformAbstractions,
+{
+    B64(DMA<Input64Byte, O::DMA>),
+    B32(DMA<Input32Byte, O::DMA>),
+}
+pub enum DeviceCtx<O>
+where
+    O: PlatformAbstractions,
+{
+    B64(DMA<Device64Byte, O::DMA>),
+    B32(DMA<Device32Byte, O::DMA>),
+}
+
+impl<O> DeviceCtx<O>
+where
+    O: PlatformAbstractions,
+{
+    pub fn new(ctx_size: SystemWordWide, a: O::DMA) -> Self {
+        match ctx_size {
+            SystemWordWide::X64 => {
+                Self::B64(DMA::new(Device64Byte::new_64byte(), 4096, a).fill_zero())
+            }
+            SystemWordWide::X32 => {
+                Self::B32(DMA::new(Device32Byte::new_32byte(), 4096, a).fill_zero())
+            }
+        }
+    }
+
+    pub fn access_mut(&mut self) -> &mut dyn DeviceHandler {
+        match self {
+            DeviceCtx::B64(dma) => dma.deref_mut(),
+            DeviceCtx::B32(dma) => dma.deref_mut(),
+        }
+    }
+
+    pub fn access(&self) -> &dyn DeviceHandler {
+        match self {
+            DeviceCtx::B64(dma) => dma.deref(),
+            DeviceCtx::B32(dma) => dma.deref(),
+        }
+    }
+
+    pub fn addr(&self) -> usize {
+        match self {
+            DeviceCtx::B64(dma) => dma.addr(),
+            DeviceCtx::B32(dma) => dma.addr(),
+        }
+    }
+}
+
+impl<O> InputCtx<O>
+where
+    O: PlatformAbstractions,
+{
+    pub fn new(ctx_size: SystemWordWide, a: O::DMA) -> Self {
+        match ctx_size {
+            SystemWordWide::X64 => {
+                Self::B64(DMA::new(Input64Byte::new_64byte(), 4096, a.clone()).fill_zero())
+            }
+            SystemWordWide::X32 => {
+                Self::B32(DMA::new(Input32Byte::new_32byte(), 4096, a.clone()).fill_zero())
+            }
+        }
+    }
+
+    pub fn access(&mut self) -> &mut dyn InputHandler {
+        match self {
+            InputCtx::B64(dma) => &mut **dma,
+            InputCtx::B32(dma) => &mut **dma,
+        }
+    }
+
+    pub fn addr(&self) -> usize {
+        match self {
+            InputCtx::B64(dma) => dma.addr(),
+            InputCtx::B32(dma) => dma.addr(),
+        }
+    }
+
+    pub fn copy_from_output(&mut self, output: &DeviceCtx<O>) {
+        match (self, output) {
+            (InputCtx::B64(i), DeviceCtx::B64(o)) => (&mut **i).copy_from_output(&**o),
+            (InputCtx::B32(i), DeviceCtx::B32(o)) => (&mut **i).copy_from_output(&**o),
+            _ => panic!("it wont happen"),
+        }
+    }
 }
 
 impl<O, const RING_BUFFER_SIZE: usize> DeviceContextList<O, RING_BUFFER_SIZE>
@@ -71,13 +162,14 @@ where
     ) {
         let os = &self.config.os;
 
-        let out_ctx = DMA::new(Device::new_64byte(), 4096, os.dma_alloc());
+        let out_ctx = DeviceCtx::new(O::WORD, os.dma_alloc());
+        let in_ctx = InputCtx::new(O::WORD, os.dma_alloc());
         let dcbaap = out_ctx.addr();
 
         self.device_ctx_inners.insert(
             slot,
             DeviceCtxInner {
-                in_ctx: { DMA::new(Input64Byte::new_64byte(), 4096, os.dma_alloc()) },
+                in_ctx,
                 out_ctx,
                 transfer_rings: {
                     (0..num_ep)

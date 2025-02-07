@@ -11,6 +11,7 @@ pub trait PlatformAbstractions: Clone + Send + Sync + Sized {
     type DMA: Allocator + Send + Sync + Clone;
     const PAGE_SIZE: usize;
     const RING_BUFFER_SIZE: usize;
+    const WORD: SystemWordWide;
     fn dma_alloc(&self) -> Self::DMA;
 }
 
@@ -32,4 +33,19 @@ pub enum WakeMethod {
     ///remember: increase permit on event. consumer side would drop every permit but not return it!
     Timer(Arc<Semaphore>),
     Yield,
+}
+
+#[derive(Clone)]
+pub enum SystemWordWide {
+    X64,
+    X32,
+}
+
+impl SystemWordWide {
+    pub const fn to_xhci_ctx_type(&self) -> usize {
+        match self {
+            SystemWordWide::X64 => 16,
+            SystemWordWide::X32 => 8,
+        }
+    }
 }

@@ -12,9 +12,10 @@ cotton-frontend=["cotton-usb-host"]
 backend-xhci = ["xhci"]
 parallel = []
 trace_xhci_enque_trb=[]
+# arceos-pci-xhci = ["pci_types","driver_common","axhal","axalloc"]
 
 [dependencies]
-xhci = {version="0.9",optional=true}
+xhci = { git = "https://github.com/dbydd/xhci.git" ,optional = true}
 axhid = {git = "https://github.com/arceos-usb/axhid.git",optional = true}
 usb-descriptor-decoder = {git="https://github.com/arceos-usb/usb-descriptor-decoder-rs.git"}
 cotton-usb-host = {version = "0.1.0",optional = true,default-features = false}
@@ -35,3 +36,9 @@ async-trait = "0.1.85"
 lazy_static = "1.5.0"
 squeak = "0.2.0"
 nosy = {version = "0.1.0",default-features = false,features = ["async"]}
+
+# #arceos
+# pci_types = { version = "0.6", optional = true }
+# driver_common = { path = "../../arceos_experiment/crates/driver_common" ,optional = true}
+# axhal = { path = "../../arceos_experiment/modules/axhal", features = ["irq"] ,optional = true}
+# axalloc = { path = "../../arceos_experiment/modules/axalloc" ,optional = true}

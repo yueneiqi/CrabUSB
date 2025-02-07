@@ -669,21 +669,16 @@ where
             };
 
             let mut writer = self.dev_ctx.write().await;
-            let context_mut = writer
-                .device_ctx_inners
-                .get_mut(&slot_id)
-                .unwrap()
-                .in_ctx
-                .deref_mut();
+            let context_mut = &mut writer.device_ctx_inners.get_mut(&slot_id).unwrap().in_ctx;
 
-            let control_context = context_mut.control_mut();
+            let control_context = context_mut.access().control_mut();
             control_context.set_add_context_flag(0);
             control_context.set_add_context_flag(1);
             for i in 2..32 {
                 control_context.clear_drop_context_flag(i);
             }
 
-            let slot_context = context_mut.device_mut().slot_mut();
+            let slot_context = context_mut.access().device_mut().slot_mut();
             slot_context.clear_multi_tt();
             slot_context.clear_hub();
             slot_context.set_route_string({
@@ -700,7 +695,7 @@ where
             slot_context.set_interrupter_target(0);
             slot_context.set_speed(port_speed);
 
-            let endpoint_0 = context_mut.device_mut().endpoint_mut(CONTROL_DCI);
+            let endpoint_0 = context_mut.access().device_mut().endpoint_mut(CONTROL_DCI);
             endpoint_0.set_endpoint_type(xhci::context::EndpointType::Control);
             endpoint_0.set_max_packet_size(default_max_packet_size);
             endpoint_0.set_max_burst_size(0);
@@ -719,7 +714,8 @@ where
 
             // trace!("{:#?}", context_mut);
 
-            (context_mut as *const Input<16>).addr() as u64
+            // (context_mut as *const Input<16>).addr() as u64
+            context_mut.addr() as _
         };
 
         fence(Ordering::Release);
@@ -787,14 +783,10 @@ where
 
         let context_addr = {
             let mut writer = self.dev_ctx.write().await;
-            let input = writer
-                .device_ctx_inners
-                .get_mut(&slot_id)
-                .unwrap()
-                .in_ctx
-                .deref_mut();
+            let input = &mut writer.device_ctx_inners.get_mut(&slot_id).unwrap().in_ctx;
 
             input
+                .access()
                 .device_mut()
                 .endpoint_mut(1) //dci=1: endpoint 0
                 .set_max_packet_size(actual_speed as _);
@@ -803,7 +795,8 @@ where
                 "CMD: evaluating context for set endpoint0 packet size {}",
                 actual_speed
             );
-            (input as *const Input<16>).addr() as _
+            // (input as *const Input<16>).addr() as _
+            input.addr() as _
         };
 
         fence(Ordering::Release);
@@ -862,17 +855,17 @@ where
         trace!(
             "trace dump ctx at slot {}:state is {:?}",
             slot,
-            DeviceHandler::slot(&**dev).slot_state()
+            dev.access().slot().slot_state()
         );
         for i in 1..32 {
-            if let EndpointState::Disabled = dev.endpoint(i).endpoint_state() {
+            if let EndpointState::Disabled = dev.access().endpoint(i).endpoint_state() {
                 continue;
             }
             trace!(
                 "  ep dci {}: {:?}-type is {:?}",
                 i,
-                dev.endpoint(i).endpoint_state(),
-                dev.endpoint(i).endpoint_type()
+                dev.access().endpoint(i).endpoint_state(),
+                dev.access().endpoint(i).endpoint_type()
             );
         }
     }
