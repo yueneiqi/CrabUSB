@@ -9,7 +9,7 @@ pub type TrbData = [u32; TRB_LEN];
 
 pub struct Ring<O: PlatformAbstractions> {
     link: bool,
-    pub trbs: DMA<[TrbData], O::DMA>,
+    pub trbs: DMA<[TrbData], O>,
     pub i: usize,
     pub cycle: bool,
 }
@@ -33,32 +33,32 @@ impl<O: PlatformAbstractions> Ring<O> {
         &self.trbs[self.i]
     }
 
-    pub fn register(&self) -> u64 {
-        self.get_trb().as_ptr() as usize as u64
+    pub fn register(&self) -> O::VirtAddr {
+        (self.get_trb().as_ptr() as usize).into()
     }
 
-    pub fn enque_command(&mut self, mut trb: command::Allowed) -> usize {
+    pub fn enque_command(&mut self, mut trb: command::Allowed) -> O::PhysAddr {
         if self.cycle {
             trb.set_cycle_bit();
         } else {
             trb.clear_cycle_bit();
         }
         let addr = self.enque_trb(trb.into_raw());
-        trace!("[CMD] >> {:?} @{:X}", trb, addr);
-        addr
+        trace!("[CMD] >> {:?} @{:X}", trb, addr.clone().into());
+        O::PhysAddr::from(addr)
     }
 
-    pub fn enque_transfer(&mut self, mut trb: transfer::Allowed) -> usize {
+    pub fn enque_transfer(&mut self, mut trb: transfer::Allowed) -> O::PhysAddr {
         if self.cycle {
             trb.set_cycle_bit();
         } else {
             trb.clear_cycle_bit();
         }
 
-        self.enque_trb(trb.into_raw())
+        O::PhysAddr::from(self.enque_trb(trb.into_raw()))
     }
 
-    pub fn enque_trb(&mut self, trb: TrbData) -> usize {
+    fn enque_trb(&mut self, trb: TrbData) -> O::VirtAddr {
         self.trbs[self.i].copy_from_slice(&trb);
         let addr = self.trbs[self.i].as_ptr() as usize;
 
@@ -69,7 +69,7 @@ impl<O: PlatformAbstractions> Ring<O> {
             );
 
         self.next_index();
-        addr
+        addr.into()
     }
 
     pub fn enque_trbs_no_check(&mut self, trb: Vec<TrbData>) {
@@ -101,9 +101,9 @@ impl<O: PlatformAbstractions> Ring<O> {
                     !self.cycle
                 );
             }
-            let address = self.trbs[0].as_ptr() as usize;
+            let address = O::VirtAddr::from(self.trbs[0].as_ptr() as usize);
             let mut link = Link::new();
-            link.set_ring_segment_pointer(address as u64)
+            link.set_ring_segment_pointer(O::PhysAddr::from(address).into() as u64)
                 .set_toggle_cycle();
 
             if self.cycle {

@@ -17,7 +17,7 @@ use embassy_futures::{block_on, yield_now};
 use event_ring::EventRing;
 use futures::{
     channel::oneshot,
-    future::{select_ok, BoxFuture},
+    future::{join_all, select_ok, BoxFuture},
     stream::Repeat,
     task::FutureObj,
 };
@@ -73,7 +73,7 @@ impl Mapper for MemMapper {
 }
 
 pub struct Receiver<const RINGBUF_SIZE: usize> {
-    pub slot: OnceCell<u8>,
+    pub slot: Arc<OnceCell<u8>>,
     pub receiver: ArcAsyncRingBufCons<USBRequest, RINGBUF_SIZE>,
 }
 
@@ -167,12 +167,12 @@ where
             .try_read()
             .expect("should gurantee exclusive access here")
             .dcbaap();
-        debug!("{TAG} Writing DCBAAP: {:X}", dcbaap);
+        debug!("{TAG} Writing DCBAAP: {:X}", dcbaap.clone().into());
         unsafe { self.regs.get().as_mut_unchecked() }
             .operational
             .dcbaap
             .update_volatile(|r| {
-                r.set(dcbaap as u64);
+                r.set(O::PhysAddr::from(dcbaap).into() as u64);
             });
         self
     }
@@ -185,12 +185,12 @@ where
         let crcr = ring.register();
         let cycle = ring.cycle;
 
-        debug!("{TAG} Writing CRCR: {:X}", crcr);
+        debug!("{TAG} Writing CRCR: {:X}", crcr.clone().into());
         unsafe { self.regs.get().as_mut_unchecked() }
             .operational
             .crcr
             .update_volatile(|r| {
-                r.set_command_ring_pointer(crcr);
+                r.set_command_ring_pointer(O::PhysAddr::from(crcr).into() as _);
                 if cycle {
                     r.set_ring_cycle_state();
                 } else {
@@ -216,17 +216,17 @@ where
             let event_ring = unsafe { self.event.get().as_ref_unchecked() };
 
             let erdp = event_ring.erdp();
-            debug!("{TAG} Writing ERDP: {:X}", erdp);
+            debug!("{TAG} Writing ERDP: {:X}", erdp.clone().into());
 
             ir0.erdp.update_volatile(|r| {
-                r.set_event_ring_dequeue_pointer(erdp);
+                r.set_event_ring_dequeue_pointer(erdp.into() as _);
             });
 
             let erstba = event_ring.erstba();
-            debug!("{TAG} Writing ERSTBA: {:X}", erstba);
+            debug!("{TAG} Writing ERSTBA: {:X}", erstba.clone().into());
 
             ir0.erstba.update_volatile(|r| {
-                r.set(erstba);
+                r.set(O::PhysAddr::from(erstba).into() as _);
             });
             ir0.imod.update_volatile(|im| {
                 im.set_interrupt_moderation_interval(0);
@@ -272,13 +272,13 @@ where
                         .get()
                         .read_volatile()
                 };
-                read_volatile[0] = scratchpad_buf_arr.register() as u64;
+                read_volatile[0] = O::PhysAddr::from(scratchpad_buf_arr.register()).into() as u64;
             }
 
             debug!(
                 "{TAG} Setting up {} scratchpads, at {:#0x}",
                 buf_count,
-                scratchpad_buf_arr.register()
+                scratchpad_buf_arr.register().into()
             );
             scratchpad_buf_arr
         };
@@ -336,18 +336,14 @@ where
                 use async_ringbuf::{traits::*, AsyncStaticRb};
                 let (prod, cons) = AsyncStaticRb::<USBRequest, RING_BUFFER_SIZE>::default().split();
 
-                unsafe { self.devices.get().as_mut_unchecked() }.push(
-                    {
-                        let mut usbdevice = USBDevice::new(self.config.clone(), prod);
-                        usbdevice
-                            .topology_path
-                            .append_port_number((port_idx + 1) as _);
-                        usbdevice
-                    }
-                    .into(),
-                );
+                let (mut usbdevice, slot_ref) = USBDevice::new(self.config.clone(), prod);
+                usbdevice
+                    .topology_path
+                    .append_port_number((port_idx + 1) as _);
+
+                unsafe { self.devices.get().as_mut_unchecked() }.push(usbdevice.into());
                 unsafe { self.requests.get().as_mut_unchecked() }.push(Receiver {
-                    slot: OnceCell::new(),
+                    slot: slot_ref,
                     receiver: cons,
                 });
             }
@@ -416,7 +412,7 @@ where
             .erdp
             .update_volatile(|f| {
                 f.set_event_ring_dequeue_pointer(
-                    unsafe { self.event.get().as_ref_unchecked() }.erdp(),
+                    unsafe { self.event.get().as_ref_unchecked() }.erdp().into() as _,
                 );
             });
     }
@@ -430,7 +426,7 @@ where
         self.ring_db(0, 0.into(), 0.into());
         fence(Ordering::Release);
 
-        let addr = addr as _;
+        let addr = addr.into() as _;
         debug!("Wait result");
         loop {
             if let Some((event, cycle)) = unsafe { self.event.get().read_volatile() }.next() {
@@ -470,7 +466,7 @@ where
         self.finish_jobs
             .write()
             .await
-            .insert(addr, XHCICompleteAction::CommandCallback(sender));
+            .insert(addr.into(), XHCICompleteAction::CommandCallback(sender));
 
         self.ring_db(0, 0.into(), 0.into());
         fence(Ordering::Release);
@@ -589,19 +585,24 @@ where
         }
     }
 
-    async fn run_once(&self) {
-        stream::select_all(unsafe {
-            //TODO: rewrite this into yield stream. but not just post once
-            self.requests.get().read_volatile().iter_mut().map(|r| {
+    async fn run_once(&'a self) {
+        let collect = unsafe { self.requests.get().as_mut_unchecked() }
+            .iter_mut()
+            .map(|r| {
                 r.receiver
                     .pop()
                     .map(|res| res.map(|req| (req, &r.slot)))
                     .into_stream()
             })
-        })
-        .filter_map(|a| async move { a })
-        .for_each(|a| self.post_transfer(a.0, a.1))
-        .await;
+            .collect::<Vec<_>>();
+        stream::select_all(collect.into_iter())
+            .for_each(|a| async {
+                match a {
+                    Some((req, slot)) => self.post_transfer(req, slot).await,
+                    None => {}
+                }
+            })
+            .await;
     }
 
     #[allow(unused_variables)]
@@ -682,9 +683,11 @@ where
             slot_context.clear_multi_tt();
             slot_context.clear_hub();
             slot_context.set_route_string({
-                let rs = device.topology_path.route_string();
-                assert_eq!(rs, 1); // for now, not support more hub ,so hardcode as 0.//TODO: generate route string
-                rs
+                // let rs = device.topology_path.route_string();
+                // assert_eq!(rs, 1);
+                // rs
+                0
+                // for now, not support more hub ,so hardcode as 0.//TODO: generate route string
             });
             slot_context.set_context_entries(1);
             slot_context.set_max_exit_latency(0);
@@ -700,8 +703,11 @@ where
             endpoint_0.set_max_packet_size(default_max_packet_size);
             endpoint_0.set_max_burst_size(0);
             endpoint_0.set_error_count(3);
-            trace!("control ring addr: {:x}", control_channel_addr);
-            endpoint_0.set_tr_dequeue_pointer(control_channel_addr);
+            trace!(
+                "control ring addr: {:x}",
+                control_channel_addr.clone().into()
+            );
+            endpoint_0.set_tr_dequeue_pointer(O::PhysAddr::from(control_channel_addr).into() as _);
             if cycle_bit {
                 endpoint_0.set_dequeue_cycle_state();
             } else {
@@ -715,7 +721,7 @@ where
             // trace!("{:#?}", context_mut);
 
             // (context_mut as *const Input<16>).addr() as u64
-            context_mut.addr() as _
+            O::PhysAddr::from(context_mut.addr()).into() as _
         };
 
         fence(Ordering::Release);
@@ -742,8 +748,10 @@ where
 
         let actual_speed = {
             //set speed
-            let buffer = DMA::new_vec(0u8, 8, 64, self.config.os.dma_alloc());
+            let buffer: DMA<[u8], O> = DMA::new_vec(0u8, 8, 64, self.config.os.dma_alloc());
             let (sender, receiver) = oneshot::channel();
+
+            assert!(device.slot_id.is_initialized());
 
             self.post_control_transfer(
                 ControlTransfer {
@@ -759,7 +767,7 @@ where
                         0,
                     )
                     .bits(),
-                    data: Some((buffer.addr(), buffer.length_for_bytes())),
+                    data: Some(buffer.phys_addr_len_tuple().into()),
                     response: false,
                 },
                 CompleteAction::SimpleResponse(sender),
@@ -796,7 +804,7 @@ where
                 actual_speed
             );
             // (input as *const Input<16>).addr() as _
-            input.addr() as _
+            O::PhysAddr::from(input.addr()).into() as _
         };
 
         fence(Ordering::Release);
@@ -930,7 +938,7 @@ where
                 .write_transfer_ring(slot, 0)
                 .expect("initialization on transfer rings got some issue, fixit.");
             trbs.into_iter()
-                .map(|trb| ring.enque_transfer(trb))
+                .map(|trb| ring.enque_transfer(trb).into())
                 .collect()
         };
 

@@ -6,8 +6,8 @@ use async_lock::Semaphore;
 pub mod dma;
 
 pub trait PlatformAbstractions: Clone + Send + Sync + Sized {
-    type VirtAddr: Into<Self::PhysAddr> + From<usize> + Into<usize> + Clone + Send + Sync;
-    type PhysAddr: Into<Self::VirtAddr> + From<usize> + Into<usize> + Clone + Send + Sync;
+    type VirtAddr: From<Self::PhysAddr> + From<usize> + Into<usize> + Clone + Send + Sync;
+    type PhysAddr: From<Self::VirtAddr> + From<usize> + Into<usize> + Clone + Send + Sync;
     type DMA: Allocator + Send + Sync + Clone;
     const PAGE_SIZE: usize;
     const RING_BUFFER_SIZE: usize;

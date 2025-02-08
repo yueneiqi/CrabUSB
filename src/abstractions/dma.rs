@@ -5,35 +5,37 @@ use core::{
     ptr::{slice_from_raw_parts, slice_from_raw_parts_mut, NonNull},
 };
 
-pub struct DMA<T, A>
+use super::PlatformAbstractions;
+
+pub struct DMA<T, O>
 where
     T: ?Sized,
-    A: Allocator,
+    O: PlatformAbstractions,
 {
     layout: Layout,
     data: NonNull<[u8]>,
-    allocator: A,
+    allocator: O::DMA,
     __marker: PhantomData<T>,
 }
 
-unsafe impl<T, A> Sync for DMA<T, A>
+unsafe impl<T, O> Sync for DMA<T, O>
 where
     T: ?Sized,
-    A: Allocator,
+    O: PlatformAbstractions,
 {
 }
 
-unsafe impl<T, A> Send for DMA<T, A>
+unsafe impl<T, O> Send for DMA<T, O>
 where
     T: ?Sized,
-    A: Allocator,
+    O: PlatformAbstractions,
 {
 }
 
-impl<T, A> DMA<T, A>
+impl<T, O> DMA<T, O>
 where
     T: Sized,
-    A: Allocator,
+    O: PlatformAbstractions,
 {
     /// 从 `value` `align` 和 `allocator` 创建 DMA，
     /// 若不符合以下条件则 Panic `LayoutError`：
@@ -41,7 +43,7 @@ where
     /// * `align` 不能为 0，
     ///
     /// * `align` 必须是2的幂次方。
-    pub fn new(value: T, align: usize, allocator: A) -> Self {
+    pub fn new(value: T, align: usize, allocator: O::DMA) -> Self {
         //计算所需内存大小
         let buff_size = size_of::<T>();
         // 根据元素数量和对其要求创建内存布局
@@ -66,31 +68,42 @@ where
     }
 }
 
-impl<T, A> DMA<T, A>
+impl<T, O> DMA<T, O>
 where
     T: ?Sized,
-    A: Allocator,
+    O: PlatformAbstractions,
 {
     /// 返回 [DMA] 地址
-    pub fn addr(&self) -> usize {
-        self.data.addr().into()
+    pub fn addr(&self) -> O::VirtAddr {
+        self.data.addr().get().into()
     }
 
     pub fn length_for_bytes(&self) -> usize {
         self.layout.size()
     }
 
-    pub fn addr_len_tuple(&self) -> (usize, usize) {
-        (self.addr(), self.length_for_bytes())
+    pub fn phys_addr_len_tuple(&self) -> AddrLenTuple<O> {
+        AddrLenTuple(O::PhysAddr::from(self.addr()), self.length_for_bytes())
     }
 }
 
-impl<T, A> DMA<[T], A>
+pub struct AddrLenTuple<O: PlatformAbstractions>(O::PhysAddr, usize);
+
+impl<O> From<AddrLenTuple<O>> for (usize, usize)
+where
+    O: PlatformAbstractions,
+{
+    fn from(value: AddrLenTuple<O>) -> Self {
+        (value.0.into(), value.1)
+    }
+}
+
+impl<T, O> DMA<[T], O>
 where
     T: Sized,
-    A: Allocator,
+    O: PlatformAbstractions,
 {
-    pub fn zeroed(count: usize, align: usize, allocator: A) -> Self {
+    pub fn zeroed(count: usize, align: usize, allocator: O::DMA) -> Self {
         let t_size = size_of::<T>();
         let size = count * t_size;
 
@@ -113,7 +126,7 @@ where
         }
     }
 
-    pub fn new_vec(init: T, count: usize, align: usize, allocator: A) -> Self {
+    pub fn new_vec(init: T, count: usize, align: usize, allocator: O::DMA) -> Self {
         let t_size = size_of::<T>();
         let size = count * t_size;
 
@@ -141,9 +154,9 @@ where
     }
 }
 
-impl<T, A> Deref for DMA<[T], A>
+impl<T, O> Deref for DMA<[T], O>
 where
-    A: Allocator,
+    O: PlatformAbstractions,
 {
     type Target = [T];
 
@@ -156,9 +169,9 @@ where
     }
 }
 
-impl<T, A> DerefMut for DMA<[T], A>
+impl<T, O> DerefMut for DMA<[T], O>
 where
-    A: Allocator,
+    O: PlatformAbstractions,
 {
     fn deref_mut(&mut self) -> &mut Self::Target {
         unsafe {
@@ -169,9 +182,9 @@ where
     }
 }
 
-impl<T, A> Deref for DMA<T, A>
+impl<T, O> Deref for DMA<T, O>
 where
-    A: Allocator,
+    O: PlatformAbstractions,
 {
     type Target = T;
 
@@ -183,9 +196,9 @@ where
     }
 }
 
-impl<T, A> DerefMut for DMA<T, A>
+impl<T, O> DerefMut for DMA<T, O>
 where
-    A: Allocator,
+    O: PlatformAbstractions,
 {
     fn deref_mut(&mut self) -> &mut Self::Target {
         unsafe {
@@ -194,10 +207,10 @@ where
         }
     }
 }
-impl<A, T> Drop for DMA<T, A>
+impl<T, O> Drop for DMA<T, O>
 where
     T: ?Sized,
-    A: Allocator,
+    O: PlatformAbstractions,
 {
     fn drop(&mut self) {
         unsafe {

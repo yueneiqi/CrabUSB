@@ -6,9 +6,10 @@ use crate::abstractions::{PlatformAbstractions, SystemWordWide, USBSystemConfig}
 
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
-use alloc::vec;
 use alloc::vec::Vec;
+use alloc::{format, vec};
 use core::ops::{Deref, DerefMut};
+use log::trace;
 use xhci::context::{Device, Device32Byte, DeviceHandler, Input64Byte, InputHandler};
 use xhci::context::{Device64Byte, Input32Byte};
 use xhci::ring::trb::transfer;
@@ -21,7 +22,7 @@ where
     O: PlatformAbstractions,
 {
     config: Arc<USBSystemConfig<O, RING_BUFFER_SIZE>>,
-    pub dcbaa: SyncUnsafeCell<DMA<[u64; 256], O::DMA>>,
+    pub dcbaa: SyncUnsafeCell<DMA<[u64; 256], O>>,
     pub device_ctx_inners: BTreeMap<u8, DeviceCtxInner<O>>,
 }
 
@@ -38,15 +39,15 @@ pub enum InputCtx<O>
 where
     O: PlatformAbstractions,
 {
-    B64(DMA<Input64Byte, O::DMA>),
-    B32(DMA<Input32Byte, O::DMA>),
+    B64(DMA<Input64Byte, O>),
+    B32(DMA<Input32Byte, O>),
 }
 pub enum DeviceCtx<O>
 where
     O: PlatformAbstractions,
 {
-    B64(DMA<Device64Byte, O::DMA>),
-    B32(DMA<Device32Byte, O::DMA>),
+    B64(DMA<Device64Byte, O>),
+    B32(DMA<Device32Byte, O>),
 }
 
 impl<O> DeviceCtx<O>
@@ -78,7 +79,7 @@ where
         }
     }
 
-    pub fn addr(&self) -> usize {
+    pub fn addr(&self) -> O::VirtAddr {
         match self {
             DeviceCtx::B64(dma) => dma.addr(),
             DeviceCtx::B32(dma) => dma.addr(),
@@ -108,7 +109,7 @@ where
         }
     }
 
-    pub fn addr(&self) -> usize {
+    pub fn addr(&self) -> O::VirtAddr {
         match self {
             InputCtx::B64(dma) => dma.addr(),
             InputCtx::B32(dma) => dma.addr(),
@@ -136,13 +137,14 @@ where
         }
     }
 
-    pub fn dcbaap(&self) -> usize {
-        unsafe { self.dcbaa.get().read_volatile() }.as_ptr() as _
+    pub fn dcbaap(&self) -> O::VirtAddr {
+        (unsafe { self.dcbaa.get().read_volatile() }.as_ptr() as usize).into()
     }
 
     pub fn write_transfer_ring(&mut self, slot: u8, channel: usize) -> Option<&mut Ring<O>> {
         self.device_ctx_inners
-            .get_mut(&(slot as _))?
+            .get_mut(&(slot as _))
+            .expect(format!("no such transfer ring at slot {slot}").as_str())
             .transfer_rings
             .get_mut(channel)
     }
@@ -166,6 +168,8 @@ where
         let in_ctx = InputCtx::new(O::WORD, os.dma_alloc());
         let dcbaap = out_ctx.addr();
 
+        trace!("inserted new transfer ring at slot {}", slot);
+
         self.device_ctx_inners.insert(
             slot,
             DeviceCtxInner {
@@ -185,8 +189,9 @@ where
                 },
             },
         );
+
         let get_mut = self.dcbaa.get_mut();
-        get_mut[slot as usize] = dcbaap as _;
+        get_mut[slot as usize] = O::PhysAddr::from(dcbaap).into() as _;
     }
 
     fn prepare_transfer_ring(mut r: Ring<O>) -> Ring<O> {
@@ -221,8 +226,8 @@ pub struct ScratchpadBufferArray<O>
 where
     O: PlatformAbstractions,
 {
-    pub entries: DMA<[ScratchpadBufferEntry], O::DMA>,
-    pub pages: Vec<DMA<[u8], O::DMA>>,
+    pub entries: DMA<[ScratchpadBufferEntry], O>,
+    pub pages: Vec<DMA<[u8], O>>,
 }
 
 unsafe impl<O: PlatformAbstractions> Sync for ScratchpadBufferArray<O> {}
@@ -235,23 +240,24 @@ where
         let page_size = O::PAGE_SIZE;
         let align = 64;
 
-        let mut entries: DMA<[ScratchpadBufferEntry], O::DMA> =
+        let mut entries: DMA<[ScratchpadBufferEntry], O> =
             DMA::zeroed(entries as usize, align, os.dma_alloc());
 
         let pages = entries
             .iter_mut()
             .map(|entry| {
                 let dma = DMA::zeroed(page_size, align, os.dma_alloc());
+                let paddr = O::PhysAddr::from(dma.addr()).into();
 
-                assert_eq!(dma.addr() % page_size, 0);
-                entry.set_addr(dma.addr() as u64);
+                assert_eq!(paddr % page_size, 0);
+                entry.set_addr(paddr as _);
                 dma
             })
             .collect();
 
         Self { entries, pages }
     }
-    pub fn register(&self) -> usize {
+    pub fn register(&self) -> O::VirtAddr {
         self.entries.addr()
     }
 }

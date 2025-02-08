@@ -39,7 +39,7 @@ where
 {
     pub config: Arc<USBSystemConfig<O, RING_BUFFER_SIZE>>,
     pub state: Arc<RwLock<DeviceState>>,
-    pub slot_id: OnceCell<u8>,
+    pub slot_id: Arc<OnceCell<u8>>,
     pub vendor_id: OnceCell<u16>,
     pub product_id: OnceCell<u16>,
     pub descriptor: OnceCell<Arc<TopologicalUSBDescriptorRoot>>,
@@ -76,18 +76,23 @@ where
     pub fn new(
         cfg: Arc<USBSystemConfig<O, RING_BUFFER_SIZE>>,
         sender: ArcAsyncRingBufPord<USBRequest, RING_BUFFER_SIZE>,
-    ) -> Self {
-        USBDevice {
-            state: RwLock::new(DeviceState::Probed).into(),
-            vendor_id: OnceCell::new(),
-            product_id: OnceCell::new(),
-            descriptor: OnceCell::new(),
-            request_channel: sender.into(),
-            configure_sem: Semaphore::new(1).into(),
-            topology_path: TopologyRoute::new(),
-            slot_id: OnceCell::new(),
-            config: cfg,
-        }
+    ) -> (Self, Arc<OnceCell<u8>>) {
+        let once_cell = Arc::new(OnceCell::new());
+
+        (
+            USBDevice {
+                state: RwLock::new(DeviceState::Probed).into(),
+                vendor_id: OnceCell::new(),
+                product_id: OnceCell::new(),
+                descriptor: OnceCell::new(),
+                request_channel: sender.into(),
+                configure_sem: Semaphore::new(1).into(),
+                topology_path: TopologyRoute::new(),
+                slot_id: once_cell.clone(),
+                config: cfg,
+            },
+            once_cell,
+        )
     }
 
     pub fn acquire_cfg_sem(&self) -> Option<ConfigureSemaphore> {
@@ -163,60 +168,24 @@ where
 
     pub async fn request_assign(&self) {
         info!("device request assign!");
-        {
-            let sem = self.configure_sem.acquire_arc().await;
-            self.post_usb_request(USBRequest {
-                operation: RequestedOperation::InitializeDevice(self.topology_path.clone()),
-                extra_action: ExtraAction::default(),
-                complete_action: CompleteAction::DropSem(ConfigureSemaphore(sem)),
-            })
-            .await;
-        }
+        let sem = self.configure_sem.acquire_arc().await;
+        self.post_usb_request(USBRequest {
+            operation: RequestedOperation::InitializeDevice(self.topology_path.clone()),
+            extra_action: ExtraAction::default(),
+            complete_action: CompleteAction::DropSem(ConfigureSemaphore(sem)),
+        })
+        .await;
+
+        let sem = self.configure_sem.acquire_arc().await;
+        *self.state.write().await = DeviceState::Assigned;
+        trace!("switch device state into assigned!");
         trace!("device initialize complete, now request device desc...");
 
-        {
-            let sem = self.configure_sem.acquire_arc().await;
-            *self.state.write().await = DeviceState::Assigned;
+        let (num_of_configs, mut parser) = {
+            let buffer_device: DMA<[u8], O> =
+                DMA::new_vec(0u8, O::PAGE_SIZE, O::PAGE_SIZE, self.config.os.dma_alloc());
 
-            let (num_of_configs, mut parser) = {
-                let buffer_device =
-                    DMA::new_vec(0u8, O::PAGE_SIZE, O::PAGE_SIZE, self.config.os.dma_alloc());
-
-                {
-                    self.post_usb_request(USBRequest {
-                        operation: RequestedOperation::Control(ControlTransfer {
-                            request_type: bmRequestType::new(
-                                Direction::In,
-                                DataTransferType::Standard,
-                                Recipient::Device,
-                            ),
-                            request: bRequest::Standard(bRequestStandard::GetDescriptor),
-                            index: 0,
-                            value: construct_control_transfer_type(
-                                USBStandardDescriptorTypes::Device as u8,
-                                0,
-                            )
-                            .bits(),
-                            data: Some(buffer_device.addr_len_tuple()),
-                            response: false,
-                        }),
-                        extra_action: ExtraAction::default(),
-                        complete_action: CompleteAction::DropSem(ConfigureSemaphore(sem)),
-                    })
-                    .await;
-                    let sem = self.configure_sem.acquire().await;
-                    drop(sem);
-                }
-
-                let mut parser = RawDescriptorParser::new(buffer_device.to_owned());
-                parser.single_state_cycle();
-                (parser.num_of_configs(), parser)
-            };
-
-            let mut sem = self.configure_sem.acquire_arc().await;
-            for index in 0..num_of_configs {
-                let buffer =
-                    DMA::new_vec(0u8, O::PAGE_SIZE, O::PAGE_SIZE, self.config.os.dma_alloc());
+            {
                 self.post_usb_request(USBRequest {
                     operation: RequestedOperation::Control(ControlTransfer {
                         request_type: bmRequestType::new(
@@ -228,25 +197,58 @@ where
                         index: 0,
                         value: construct_control_transfer_type(
                             USBStandardDescriptorTypes::Device as u8,
-                            index as _,
+                            0,
                         )
                         .bits(),
-                        data: Some(buffer.addr_len_tuple()),
+                        data: Some(buffer_device.phys_addr_len_tuple().into()),
                         response: false,
                     }),
                     extra_action: ExtraAction::default(),
                     complete_action: CompleteAction::DropSem(ConfigureSemaphore(sem)),
                 })
                 .await;
-                sem = self.configure_sem.acquire_arc().await;
-                parser.append_config(buffer.to_owned());
+                let sem = self.configure_sem.acquire().await;
+                drop(sem);
             }
-            trace!("try to parse device descriptor!");
-            self.descriptor
-                .set(parser.summarize().into())
-                .await
-                .unwrap();
-            debug!("parsed device desc: {:#?}", self.descriptor)
+
+            let mut parser = RawDescriptorParser::new(buffer_device.to_owned());
+            parser.single_state_cycle();
+            (parser.num_of_configs(), parser)
         };
+
+        let mut sem = self.configure_sem.acquire_arc().await;
+        for index in 0..num_of_configs {
+            let buffer: DMA<[u8], O> =
+                DMA::new_vec(0u8, O::PAGE_SIZE, O::PAGE_SIZE, self.config.os.dma_alloc());
+            self.post_usb_request(USBRequest {
+                operation: RequestedOperation::Control(ControlTransfer {
+                    request_type: bmRequestType::new(
+                        Direction::In,
+                        DataTransferType::Standard,
+                        Recipient::Device,
+                    ),
+                    request: bRequest::Standard(bRequestStandard::GetDescriptor),
+                    index: 0,
+                    value: construct_control_transfer_type(
+                        USBStandardDescriptorTypes::Device as u8,
+                        index as _,
+                    )
+                    .bits(),
+                    data: Some(buffer.phys_addr_len_tuple().into()),
+                    response: false,
+                }),
+                extra_action: ExtraAction::default(),
+                complete_action: CompleteAction::DropSem(ConfigureSemaphore(sem)),
+            })
+            .await;
+            sem = self.configure_sem.acquire_arc().await;
+            parser.append_config(buffer.to_owned());
+        }
+        trace!("try to parse device descriptor!");
+        self.descriptor
+            .set(parser.summarize().into())
+            .await
+            .unwrap();
+        debug!("parsed device desc: {:#?}", self.descriptor)
     }
 }

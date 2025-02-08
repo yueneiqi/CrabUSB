@@ -31,7 +31,7 @@ where
 {
     pub waker: AtomicWaker,
     pub ring: Ring<O>,
-    pub ste: DMA<[EventRingSte], O::DMA>,
+    pub ste: DMA<[EventRingSte], O>,
 }
 
 impl<O> EventRing<O>
@@ -46,10 +46,9 @@ where
             waker: AtomicWaker::new(),
         };
         ring.ring.cycle = true;
-        ring.ste[0].addr_low.set(ring.ring.register() as u32);
-        ring.ste[0]
-            .addr_high
-            .set((ring.ring.register() >> 32) as u32);
+        let ringaddr: usize = O::PhysAddr::from(ring.ring.register()).into();
+        ring.ste[0].addr_low.set(ringaddr as u32);
+        ring.ste[0].addr_high.set((ringaddr >> 32) as u32);
         ring.ste[0].size.set(ring.ring.trbs.len() as u16);
 
         ring
@@ -123,12 +122,13 @@ where
         }
     }
 
-    pub fn erdp(&self) -> u64 {
-        self.ring.register() & 0xFFFF_FFFF_FFFF_FFF0
+    pub fn erdp(&self) -> O::PhysAddr {
+        (Into::<usize>::into(O::PhysAddr::from(self.ring.register())) & 0xFFFF_FFFF_FFFF_FFF0)
+            .into()
     }
-    pub fn erstba(&self) -> u64 {
+    pub fn erstba(&self) -> O::VirtAddr {
         let ptr = &self.ste[0];
-        ptr as *const EventRingSte as usize as u64
+        (ptr as *const EventRingSte as usize).into()
     }
 
     fn register_waker(&self, waker: &Waker)
