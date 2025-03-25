@@ -38,6 +38,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "any-uart"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1f8d2c852c79dd31f0dbebae83c731b027fdf164c368d82606954e57c17444cd"
+dependencies = [
+ "embedded-hal-nb",
+ "fdt-parser",
+]
+
+[[package]]
 name = "anyhow"
 version = "1.0.97"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -240,6 +250,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bc2af71bef611a9b47e76fb7844ab348b172aa3649ebdfdcb854a5d30cd47be5"
 
 [[package]]
+name = "embedded-hal"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "361a90feb7004eca4019fb28352a9465666b24f840f5c3cddf0ff13920590b89"
+
+[[package]]
+name = "embedded-hal-nb"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fba4268c14288c828995299e59b12babdbe170f6c6d73731af1b4648142e8605"
+dependencies = [
+ "embedded-hal",
+ "nb",
+]
+
+[[package]]
 name = "enum_dispatch"
 version = "0.3.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -351,9 +377,9 @@ dependencies = [
 
 [[package]]
 name = "log"
-version = "0.4.26"
+version = "0.4.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "30bde2b3dc3671ae49d8e2e9f044c7c005836e7a023ee57cffa25ab82764bb9e"
+checksum = "13dc2df351e3202783a1fe0d44375f7295ffb4049267b0f3018346dc122a1d94"
 
 [[package]]
 name = "memory_addr"
@@ -650,12 +676,13 @@ dependencies = [
 
 [[package]]
 name = "sparreal-rt"
-version = "0.9.0"
+version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b174978e693d6812369e244af4fd712cabc14f0af4a3fbe12a9b314a1b7ff396"
+checksum = "391cd2150c4c0eae024340e4425146b625fea2a2b769098212d1ca299791b411"
 dependencies = [
  "aarch64-cpu",
  "ansi_rgb",
+ "any-uart",
  "arm-gic-driver",
  "arrayvec",
  "buddy_system_allocator",

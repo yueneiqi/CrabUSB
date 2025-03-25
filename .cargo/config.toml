@@ -1,5 +1,5 @@
 [target.'cfg(all(target_os = "none"))']
-runner = "ostool cargo-test"
+runner = "/home/zhourui/opensource/ostool/target/release/ostool cargo-test"
 
 [build]
 target = "aarch64-unknown-none"
