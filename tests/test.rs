@@ -6,7 +6,7 @@ extern crate alloc;
 
 #[bare_test::tests]
 mod tests {
-    use alloc::vec::Vec;
+    use alloc::{boxed::Box, vec::Vec};
     use bare_test::{
         GetIrqConfig,
         async_std::time,
@@ -29,7 +29,10 @@ mod tests {
     #[test]
     fn test_all() {
         let info = get_usb_host();
-        let host = Device::new(Descriptor::default(), info.usb);
+
+        let mut host = Box::pin(info.usb);
+
+        let ptr: *mut USBHost<Xhci> = host.as_mut().get_mut() as *mut _;
 
         if let Some(irq) = &info.irq {
             for one in &irq.cfgs {
@@ -38,10 +41,9 @@ mod tests {
                     cfg: one.clone(),
                 }
                 .register_builder({
-                    let host = host.weak();
                     move |_irq| {
                         unsafe {
-                            (*host.upgrade().unwrap().force_use()).handle_irq();
+                            (&mut *ptr).handle_irq();
                         }
                         IrqHandleResult::Handled
                     }
@@ -51,8 +53,6 @@ mod tests {
         }
 
         spin_on::spin_on(async move {
-            let mut host = host.spin_try_borrow_by(0.into());
-
             host.init().await.unwrap();
 
             debug!("usb cmd test");
