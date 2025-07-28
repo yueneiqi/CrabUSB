@@ -537,6 +537,7 @@ impl Xhci {
         .await?;
 
         let packet_size = data.last().map(|&len| if len == 0 { 8u8 } else { len });
+        trace!("packet_size: {packet_size:?}");
 
         Ok(Box::new(slot))
     }
