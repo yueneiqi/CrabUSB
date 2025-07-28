@@ -123,7 +123,10 @@ impl EventRing {
                     debug!("port change: {}", st.port_id());
                 }
                 Allowed::TransferEvent(c)=>{
-                    
+                    let addr = c.trb_pointer();
+                    trace!("[EVENT] << {allowed:?} @{addr:X}");
+
+                    debug!("transfer event: {c:?}");
                 }
                 _ => {
                     debug!("unhandled event {allowed:?}");
