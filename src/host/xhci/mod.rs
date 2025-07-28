@@ -8,7 +8,6 @@ use core::{
 
 use alloc::{boxed::Box, vec::Vec};
 use context::{ScratchpadBufferArray, XhciSlot};
-use dma_api::DVec;
 use future::LocalBoxFuture;
 use futures::{prelude::*, task::AtomicWaker};
 use log::*;
@@ -234,14 +233,14 @@ impl Xhci {
             r.set_max_device_slots_enabled(max_slots);
         });
 
-        debug!("Max device slots: {}", max_slots);
+        debug!("Max device slots: {max_slots}");
 
         max_slots
     }
 
     fn setup_dcbaap(&mut self) -> Result {
         let dcbaa_addr = self.data()?.dev_list.dcbaa.bus_addr();
-        debug!("DCBAAP: {:X}", dcbaa_addr);
+        debug!("DCBAAP: {dcbaa_addr:X}");
         self.regs().operational.dcbaap.update_volatile(|r| {
             r.set(dcbaa_addr);
         });
@@ -253,7 +252,7 @@ impl Xhci {
         let crcr = self.data()?.cmd.trbs.bus_addr();
         let cycle = self.data()?.cmd.cycle;
 
-        debug!("CRCR: {:X}", crcr);
+        debug!("CRCR: {crcr:X}");
         self.regs().operational.crcr.update_volatile(|r| {
             r.set_command_ring_pointer(crcr);
             if cycle {
@@ -281,7 +280,7 @@ impl Xhci {
         {
             let mut ir0 = regs.interrupter_register_set.interrupter_mut(0);
 
-            debug!("ERDP: {:x}", erdp);
+            debug!("ERDP: {erdp:x}");
 
             ir0.erdp.update_volatile(|r| {
                 r.set_event_ring_dequeue_pointer(erdp);
@@ -289,9 +288,9 @@ impl Xhci {
                 r.clear_event_handler_busy();
             });
 
-            debug!("ERSTZ: {:x}", erstz);
+            debug!("ERSTZ: {erstz:x}");
             ir0.erstsz.update_volatile(|r| r.set(erstz as _));
-            debug!("ERSTBA: {:X}", erstba);
+            debug!("ERSTBA: {erstba:X}");
             ir0.erstba.update_volatile(|r| {
                 r.set(erstba);
             });
@@ -331,7 +330,7 @@ impl Xhci {
                     .hcsparams2
                     .read_volatile()
                     .max_scratchpad_buffers();
-                debug!("Scratch buf count: {}", count);
+                debug!("Scratch buf count: {count}");
                 count
             };
             if buf_count == 0 {
@@ -343,7 +342,7 @@ impl Xhci {
 
             self.data()?.dev_list.dcbaa.set(0, bus_addr);
 
-            debug!("Setting up {} scratchpads, at {:#0x}", buf_count, bus_addr);
+            debug!("Setting up {buf_count} scratchpads, at {bus_addr:#0x}");
             scratchpad_buf_arr
         };
 
@@ -387,7 +386,7 @@ impl Xhci {
         let port_len = regs.port_register_set.len();
 
         for i in 0..port_len {
-            debug!("Port {} start reset", i,);
+            debug!("Port {i} start reset",);
             regs.port_register_set.update_volatile_at(i, |port| {
                 port.portsc.set_0_port_enabled_disabled();
                 port.portsc.set_port_reset();
@@ -506,7 +505,7 @@ impl Xhci {
 
     async fn new_slot(&mut self, port_idx: usize) -> Result<Box<dyn Slot>> {
         let slot_id = self.device_slot_assignment().await?;
-        debug!("Slot {} assigned", slot_id);
+        debug!("Slot {slot_id} assigned");
 
         let ctx = self.data()?.dev_list.new_ctx(slot_id, 32)?;
 
@@ -516,7 +515,7 @@ impl Xhci {
 
         self.address(&mut slot, port_idx).await?;
 
-        debug!("Slot {} address complete", slot_id);
+        debug!("Slot {slot_id} address complete");
 
         self.data()?.event.listen_ring(slot.ctrl_ring_mut());
 
@@ -537,8 +536,7 @@ impl Xhci {
         })
         .await?;
 
-        let packet_size = data
-            .last().map(|&len| if len == 0 { 8u8 } else { len });
+        let packet_size = data.last().map(|&len| if len == 0 { 8u8 } else { len });
 
         Ok(Box::new(slot))
     }
@@ -559,7 +557,7 @@ impl Xhci {
 
         let transfer_ring_0_addr = slot.ep_ring_ref(dci).bus_addr();
 
-        trace!("ring0: {:#x}", transfer_ring_0_addr);
+        trace!("ring0: {transfer_ring_0_addr:#x}");
 
         let ring_cycle_bit = slot.ep_ring_ref(dci).cycle;
 
@@ -612,7 +610,7 @@ impl Xhci {
             ))
             .await?;
 
-        debug!("Address slot ok {:?}", result);
+        debug!("Address slot ok {result:?}");
 
         Ok(())
     }

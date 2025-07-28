@@ -102,7 +102,7 @@ impl EventRing {
             match allowed {
                 Allowed::CommandCompletion(c) => {
                     let addr = c.command_trb_pointer();
-                    trace!("[EVENT] << {:?} @{:X}", allowed, addr);
+                    trace!("[EVENT] << {allowed:?} @{addr:X}");
 
                     let r = match c.completion_code() {
                         Ok(code) => {
@@ -126,7 +126,7 @@ impl EventRing {
                     
                 }
                 _ => {
-                    debug!("unhandled event {:?}", allowed);
+                    debug!("unhandled event {allowed:?}");
                 }
             }
             count += 1;

@@ -75,7 +75,7 @@ impl Ring {
             trb.clear_cycle_bit();
         }
         let addr = self.enque_trb(trb.into());
-        trace!("[CMD] >> {:?} @{:X}", trb, addr);
+        trace!("[CMD] >> {trb:?} @{addr:X}");
         addr
     }
 
@@ -86,7 +86,7 @@ impl Ring {
             trb.clear_cycle_bit();
         }
         let addr = self.enque_trb(trb.into());
-        trace!("[Transfer] >> {:?} @{:X}", trb, addr);
+        trace!("[Transfer] >> {trb:?} @{addr:X}");
         addr
     }
 

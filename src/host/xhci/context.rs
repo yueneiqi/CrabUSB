@@ -115,7 +115,7 @@ impl XhciSlot {
             let dm = DSliceMut::from(data_slice, Direction::Bidirectional);
 
             if matches!(urb.request_type.direction, trans::Direction::Out) {
-                dm.preper_write_all();
+                dm.confirm_write_all();
             }
 
             setup
@@ -160,7 +160,7 @@ impl XhciSlot {
             trb_ptr = ring.enque_transfer(trb);
         }
 
-        trace!("trb : {:#x}", trb_ptr);
+        trace!("trb : {trb_ptr:#x}");
 
         fence(Ordering::Release);
 
@@ -260,8 +260,7 @@ impl ScratchpadBufferArray {
         let entries =
             DVec::zeros(entries, 64, dma_api::Direction::ToDevice).ok_or(USBError::NoMemory)?;
 
-        let pages = entries
-            .iter()
+        let pages = (0..entries.len())
             .map(|_| {
                 DVec::<u8>::zeros(0x1000, 0x1000, dma_api::Direction::ToDevice)
                     .ok_or(USBError::NoMemory)
