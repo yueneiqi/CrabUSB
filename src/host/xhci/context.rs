@@ -9,6 +9,7 @@ use alloc::{
 };
 use dma_api::{DBox, DSliceMut, DVec, Direction};
 use log::trace;
+use mbarrier::wmb;
 use xhci::{
     context::{Device32Byte, Input32Byte},
     registers::doorbell,
@@ -20,6 +21,7 @@ use crate::{
     Slot,
     err::*,
     standard::trans::{self, control::ControlTransfer},
+    xhci::SlotId,
 };
 
 pub struct DeviceContextList {
@@ -39,7 +41,7 @@ pub struct DeviceContext {
 }
 
 pub struct XhciSlot {
-    pub id: usize,
+    pub id: SlotId,
     ctx: Arc<DeviceContext>,
     reg: XhciRegisters,
     ring_wait: Weak<RingWait>,
@@ -47,7 +49,7 @@ pub struct XhciSlot {
 
 impl XhciSlot {
     pub(crate) fn new(
-        slot_id: usize,
+        slot_id: SlotId,
         ctx: Arc<DeviceContext>,
         reg: XhciRegisters,
         ring_wait: Weak<RingWait>,
@@ -162,12 +164,15 @@ impl XhciSlot {
 
         trace!("trb : {trb_ptr:#x}");
 
-        fence(Ordering::Release);
+        wmb();
 
         let mut bell = doorbell::Register::default();
         bell.set_doorbell_target(1);
 
-        self.reg.reg().doorbell.write_volatile_at(self.id, bell);
+        self.reg
+            .reg()
+            .doorbell
+            .write_volatile_at(self.id.as_usize(), bell);
 
         let _ret = self
             .ring_wait
@@ -227,10 +232,10 @@ impl DeviceContextList {
 
     pub fn new_ctx(
         &mut self,
-        slot_id: usize,
+        slot_id: SlotId,
         num_ep: usize, // cannot lesser than 0, and consider about alignment, use usize
     ) -> Result<Arc<DeviceContext>> {
-        if slot_id > self.max_slots {
+        if slot_id.as_usize() > self.max_slots {
             Err(USBError::SlotLimitReached)?;
         }
 
@@ -238,13 +243,13 @@ impl DeviceContextList {
 
         let ctx_mut = unsafe { &mut *ctx.data.get() };
 
-        self.dcbaa.set(slot_id, ctx_mut.out.bus_addr());
+        self.dcbaa.set(slot_id.as_usize(), ctx_mut.out.bus_addr());
 
         ctx_mut.transfer_rings = (0..num_ep)
             .map(|_| Ring::new(true, dma_api::Direction::Bidirectional))
             .try_collect()?;
 
-        self.ctx_list[slot_id] = Some(ctx.clone());
+        self.ctx_list[slot_id.as_usize()] = Some(ctx.clone());
 
         Ok(ctx)
     }

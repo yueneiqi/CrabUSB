@@ -22,7 +22,9 @@ use xhci::{
 };
 
 mod context;
+mod def;
 mod event;
+mod host;
 mod ring;
 
 use super::{Controller, Slot};
@@ -34,6 +36,7 @@ use crate::{
         control::{ControlTransfer, Recipient, Request, RequestType, TransferType},
     },
 };
+use def::*;
 
 type Registers = xhci::Registers<MemMapper>;
 // type RegistersExtList = xhci::extended_capabilities::List<MemMapper>;
@@ -492,7 +495,7 @@ impl Xhci {
 
         port_idx_list
     }
-    async fn device_slot_assignment(&mut self) -> Result<usize> {
+    async fn device_slot_assignment(&mut self) -> Result<SlotId> {
         // enable slot
         let result = self
             .post_cmd(command::Allowed::EnableSlot(command::EnableSlot::default()))
@@ -500,7 +503,7 @@ impl Xhci {
 
         let slot_id = result.slot_id();
         trace!("assigned slot id: {slot_id}");
-        Ok(slot_id as usize)
+        Ok(slot_id.into())
     }
 
     async fn new_slot(&mut self, port_idx: usize) -> Result<Box<dyn Slot>> {
@@ -606,7 +609,7 @@ impl Xhci {
         let result = self
             .post_cmd(command::Allowed::AddressDevice(
                 *command::AddressDevice::new()
-                    .set_slot_id(slot.id as _)
+                    .set_slot_id(slot.id.into())
                     .set_input_context_pointer(slot.input_bus_addr()),
             ))
             .await?;

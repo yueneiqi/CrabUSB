@@ -3,7 +3,7 @@ use core::{cell::UnsafeCell, task::Poll};
 use alloc::collections::btree_map::BTreeMap;
 use futures::task::AtomicWaker;
 
-pub struct WaitMap<T>(UnsafeCell<BTreeMap<u64, Elem<T>>>);
+pub struct WaitMap<T>(BTreeMap<u64, Elem<T>>);
 
 unsafe impl<T> Send for WaitMap<T> {}
 unsafe impl<T> Sync for WaitMap<T> {}
@@ -25,12 +25,11 @@ impl<T> WaitMap<T> {
                 },
             );
         }
-        Self(UnsafeCell::new(map))
+        Self(map)
     }
 
     pub fn insert(&mut self, id: u64) {
-        let map = unsafe { &mut *self.0.get() };
-        map.insert(
+        self.0.insert(
             id,
             Elem {
                 result: None,
@@ -40,17 +39,15 @@ impl<T> WaitMap<T> {
     }
 
     pub fn set_result(&mut self, id: u64, result: T) {
-        let entry = self.0.get_mut().get_mut(&id).unwrap();
-
+        let entry = self.0.get_mut(&id).unwrap();
         entry.result.replace(result);
-
         if let Some(wake) = entry.waker.take() {
             wake.wake();
         }
     }
 
-    fn poll(&self, id: u64, cx: &mut core::task::Context<'_>) -> Poll<T> {
-        let entry = { unsafe { &mut *self.0.get() }.get_mut(&id).unwrap() };
+    fn poll(&mut self, id: u64, cx: &mut core::task::Context<'_>) -> Poll<T> {
+        let entry = self.0.get_mut(&id).unwrap();
 
         match entry.result.take() {
             Some(v) => Poll::Ready(v),
@@ -61,21 +58,21 @@ impl<T> WaitMap<T> {
         }
     }
 
-    pub fn wait_for_result(&self, id: u64) -> Waiter<'_, T> {
+    pub fn wait_for_result(&mut self, id: u64) -> Waiter<'_, T> {
         Waiter { id, wait: self }
     }
 }
 
 pub struct Waiter<'a, T> {
     id: u64,
-    wait: &'a WaitMap<T>,
+    wait: &'a mut WaitMap<T>,
 }
 
 impl<T> Future for Waiter<'_, T> {
     type Output = T;
 
     fn poll(
-        self: core::pin::Pin<&mut Self>,
+        mut self: core::pin::Pin<&mut Self>,
         cx: &mut core::task::Context<'_>,
     ) -> core::task::Poll<Self::Output> {
         let addr = self.id;

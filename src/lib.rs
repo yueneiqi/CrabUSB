@@ -5,6 +5,9 @@ extern crate alloc;
 
 use core::time::Duration;
 
+#[macro_use]
+mod _macros;
+
 pub mod err;
 mod host;
 pub mod standard;

@@ -122,11 +122,12 @@ impl EventRing {
                 Allowed::PortStatusChange(st) => {
                     debug!("port change: {}", st.port_id());
                 }
-                Allowed::TransferEvent(c)=>{
+                Allowed::TransferEvent(c) => {
                     let addr = c.trb_pointer();
                     trace!("[EVENT] << {allowed:?} @{addr:X}");
-
                     debug!("transfer event: {c:?}");
+                    let slot_id = c.slot_id();
+                    let dci = c.endpoint_id();
                 }
                 _ => {
                     debug!("unhandled event {allowed:?}");
