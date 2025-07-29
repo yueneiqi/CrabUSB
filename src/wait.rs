@@ -9,7 +9,6 @@ use alloc::{
     sync::{Arc, Weak},
 };
 use futures::task::AtomicWaker;
-use spin::Mutex;
 
 pub struct WaitMap<T>(Arc<UnsafeCell<WaitMapRaw<T>>>);
 
@@ -19,6 +18,17 @@ unsafe impl<T> Sync for WaitMap<T> {}
 impl<T> WaitMap<T> {
     pub fn new(id_list: impl Iterator<Item = u64>) -> Self {
         Self(Arc::new(UnsafeCell::new(WaitMapRaw::new(id_list))))
+    }
+
+    pub fn empty() -> Self {
+        Self(Arc::new(UnsafeCell::new(WaitMapRaw(BTreeMap::new()))))
+    }
+
+    pub fn append(&self, id_ls: impl Iterator<Item = u64>) {
+        let raw = unsafe { &mut *self.0.get() };
+        for id in id_ls {
+            raw.0.insert(id, Elem::new());
+        }
     }
 
     pub unsafe fn set_result(&self, id: u64, result: T) {
@@ -64,19 +74,22 @@ struct Elem<T> {
     result_ok: AtomicBool,
 }
 
+impl<T> Elem<T> {
+    fn new() -> Self {
+        Self {
+            result: None,
+            waker: AtomicWaker::new(),
+            using: AtomicBool::new(false),
+            result_ok: AtomicBool::new(false),
+        }
+    }
+}
+
 impl<T> WaitMapRaw<T> {
     pub fn new(id_list: impl Iterator<Item = u64>) -> Self {
         let mut map = BTreeMap::new();
         for id in id_list {
-            map.insert(
-                id,
-                Elem {
-                    result: None,
-                    waker: AtomicWaker::new(),
-                    using: AtomicBool::new(false),
-                    result_ok: AtomicBool::new(false),
-                },
-            );
+            map.insert(id, Elem::new());
         }
         Self(map)
     }

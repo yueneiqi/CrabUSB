@@ -1,6 +1,6 @@
 use core::cell::UnsafeCell;
 
-use alloc::{collections::btree_map::BTreeMap, sync::Arc, vec::Vec};
+use alloc::{sync::Arc, vec::Vec};
 use dma_api::{DBox, DSliceMut, DVec, Direction};
 use log::trace;
 use mbarrier::wmb;
@@ -8,7 +8,7 @@ use xhci::{
     context::{Device32Byte, Input32Byte},
     registers::doorbell,
     ring::trb::{
-        event::TransferEvent,
+        event::{CompletionCode, TransferEvent},
         transfer::{self, TransferType},
     },
 };
@@ -18,8 +18,8 @@ use crate::{
     Slot,
     err::*,
     standard::trans::{self, control::ControlTransfer},
-    wait::{WaitMap, WaitMapWeak},
-    xhci::{SlotId, def::Dci, ring::TransferRingWaitWeak},
+    wait::WaitMapWeak,
+    xhci::{SlotId, def::Dci},
 };
 
 pub struct DeviceContextList {
@@ -42,31 +42,22 @@ pub struct XhciSlot {
     pub id: SlotId,
     ctx: Arc<DeviceContext>,
     reg: XhciRegisters,
-    pub ctrl_wait: WaitMap<TransferEvent>,
-    wait: BTreeMap<Dci, WaitMapWeak<TransferEvent>>,
+    wait: WaitMapWeak<TransferEvent>,
 }
 
 impl XhciSlot {
-    pub(crate) fn new(slot_id: SlotId, ctx: Arc<DeviceContext>, reg: XhciRegisters) -> Self {
-        let ctrl = unsafe {
-            let data = &mut *ctx.data.get();
-            let ring = &data.transfer_rings[0];
-            WaitMap::new(ring.trb_bus_addr_list())
-        };
-        let mut wait = BTreeMap::new();
-        wait.insert(1.into(), ctrl.weak());
-
+    pub(crate) fn new(
+        slot_id: SlotId,
+        ctx: Arc<DeviceContext>,
+        reg: XhciRegisters,
+        wait: WaitMapWeak<TransferEvent>,
+    ) -> Self {
         Self {
             id: slot_id,
             ctx,
             reg,
-            ctrl_wait: ctrl,
             wait,
         }
-    }
-
-    pub fn ring_wait_weak(&self, dci: Dci) -> Option<TransferRingWaitWeak> {
-        self.wait.get(&dci).cloned()
     }
 
     pub fn ep_ring_ref(&self, dci: Dci) -> &Ring {
@@ -180,7 +171,16 @@ impl XhciSlot {
             .doorbell
             .write_volatile_at(self.id.as_usize(), bell);
 
-        let _ret = self.ctrl_wait.try_wait_for_result(trb_ptr).unwrap().await;
+        let ret = self.wait.try_wait_for_result(trb_ptr).unwrap().await;
+
+        match ret.completion_code() {
+            Ok(code) => {
+                if !matches!(code, CompletionCode::Success) {
+                    return Err(USBError::TransferEventError(code));
+                }
+            }
+            Err(_e) => return Err(USBError::Unknown),
+        }
 
         if let Some((addr, len)) = urb.data {
             let data_slice =

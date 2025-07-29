@@ -1,12 +1,12 @@
-use alloc::{boxed::Box, collections::btree_map::BTreeMap, sync::Arc};
-use log::{debug, trace, warn};
+use alloc::{boxed::Box, sync::Arc};
+use log::{debug, trace};
 use mbarrier::wmb;
 use xhci::{
     context::{Input32Byte, InputHandler},
     registers::doorbell,
     ring::trb::{
         command,
-        event::{Allowed, CommandCompletion, CompletionCode},
+        event::{Allowed, CommandCompletion, CompletionCode, TransferEvent},
     },
 };
 
@@ -24,7 +24,7 @@ use crate::{
         def::{Dci, SlotId},
         event::EventRing,
         parse_default_max_packet_size_from_port_speed,
-        ring::{Ring, TransferRingWaitWeak, TrbData},
+        ring::{Ring, TrbData},
     },
 };
 
@@ -36,7 +36,7 @@ pub struct Root {
     cmd_wait: WaitMap<CommandCompletion>,
     pub scratchpad_buf_arr: Option<ScratchpadBufferArray>,
 
-    transfer_ring_map: SlotRingMap,
+    transfer_wait: WaitMap<TransferEvent>,
 }
 
 impl Root {
@@ -56,7 +56,7 @@ impl Root {
             event_ring,
             scratchpad_buf_arr: None,
             reg,
-            transfer_ring_map: Default::default(),
+            transfer_wait: WaitMap::empty(),
             cmd_wait,
         })
     }
@@ -119,17 +119,8 @@ impl Root {
                         let addr = c.trb_pointer();
                         trace!("[Transfer] << {allowed:?} @{addr:X}");
                         debug!("transfer event: {c:?}");
-                        let slot_id = c.slot_id().into();
-                        let dci = c.endpoint_id().into();
-                        if let Some(wait) = self
-                            .transfer_ring_map
-                            .0
-                            .get_mut(&slot_id)
-                            .and_then(|map| map.0.get_mut(&dci))
-                            && wait.set_result(c.trb_pointer(), c).is_none()
-                        {
-                            warn!("ring dropped, slot: {slot_id}, dci: {dci}");
-                        }
+
+                        self.transfer_wait.set_result(c.trb_pointer(), c)
                     }
                     _ => {
                         debug!("unhandled event {allowed:?}");
@@ -163,20 +154,18 @@ impl Root {
         Ok(slot_id.into())
     }
 
+    fn litsen_transfer(&mut self, ring: &Ring) {
+        self.transfer_wait.append(ring.trb_bus_addr_list());
+    }
+
     fn new_slot_data(
         &mut self,
         slot_id: SlotId,
         ctx: Arc<DeviceContext>,
     ) -> Result<XhciSlot, USBError> {
         let g = self.reg.disable_irq_guard();
-        let slot = XhciSlot::new(slot_id, ctx, self.reg.clone());
-        let ctrl_dci = 1.into();
-        self.transfer_ring_map
-            .0
-            .entry(slot.id)
-            .or_default()
-            .0
-            .insert(ctrl_dci, slot.ring_wait_weak(ctrl_dci).unwrap());
+        let mut slot = XhciSlot::new(slot_id, ctx, self.reg.clone(), self.transfer_wait.weak());
+        self.litsen_transfer(slot.ctrl_ring_mut());
         drop(g);
         Ok(slot)
     }
@@ -322,9 +311,3 @@ impl Root {
         Ok(())
     }
 }
-
-#[derive(Default)]
-struct EpRingMap(BTreeMap<Dci, TransferRingWaitWeak>);
-
-#[derive(Default)]
-struct SlotRingMap(BTreeMap<SlotId, EpRingMap>);
