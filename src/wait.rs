@@ -35,8 +35,14 @@ impl<T> WaitMap<T> {
         unsafe { (&mut *self.0.get()).set_result(id, result) };
     }
 
-    pub fn try_wait_for_result(&self, id: u64) -> Option<Waiter<'_, T>> {
-        unsafe { (&mut *self.0.get()).try_wait_for_result(id) }
+    pub fn try_wait_for_result(&self, id: u64) -> Option<Waiter<T>> {
+        unsafe {
+            (&mut *self.0.get()).try_lock(id)?;
+        }
+        Some(Waiter {
+            id,
+            wait: self.weak(),
+        })
     }
 
     pub fn weak(&self) -> WaitMapWeak<T> {
@@ -44,13 +50,24 @@ impl<T> WaitMap<T> {
     }
 }
 
-#[derive(Clone)]
 pub struct WaitMapWeak<T>(Weak<UnsafeCell<WaitMapRaw<T>>>);
 
+impl<T> Clone for WaitMapWeak<T> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
 impl<T> WaitMapWeak<T> {
-    pub fn try_wait_for_result(&self, id: u64) -> Option<Waiter<'_, T>> {
-        let r = self.0.upgrade()?;
-        unsafe { (&mut *r.get()).try_wait_for_result(id) }
+    pub fn try_wait_for_result(&self, id: u64) -> Option<Waiter<T>> {
+        let arc = self.0.upgrade()?;
+        unsafe {
+            (&mut *arc.get()).try_lock(id)?;
+        }
+        Some(Waiter {
+            id,
+            wait: self.clone(),
+        })
     }
 }
 
@@ -104,7 +121,7 @@ impl<T> WaitMapRaw<T> {
         }
     }
 
-    fn try_wait_for_result(&mut self, id: u64) -> Option<Waiter<'_, T>> {
+    fn try_lock(&mut self, id: u64) -> Option<()> {
         let elem = self
             .0
             .get_mut(&id)
@@ -115,34 +132,37 @@ impl<T> WaitMapRaw<T> {
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_ok()
         {
-            Some(Waiter { elem })
+            Some(())
         } else {
             None
         }
     }
 }
 
-pub struct Waiter<'a, T> {
-    elem: &'a mut Elem<T>,
+pub struct Waiter<T> {
+    id: u64,
+    wait: WaitMapWeak<T>,
 }
 
-impl<T> Future for Waiter<'_, T> {
+impl<T> Future for Waiter<T> {
     type Output = T;
 
     fn poll(
-        mut self: core::pin::Pin<&mut Self>,
+        self: core::pin::Pin<&mut Self>,
         cx: &mut core::task::Context<'_>,
     ) -> core::task::Poll<Self::Output> {
-        if self.elem.result_ok.load(Ordering::Acquire) {
-            let result = self
-                .elem
+        let elem = self.wait.0.upgrade().unwrap();
+        let elem = unsafe { &mut *elem.get() }.0.get_mut(&self.id).unwrap();
+
+        if elem.result_ok.load(Ordering::Acquire) {
+            let result = elem
                 .result
                 .take()
                 .expect("Waiter polled after result was set");
-            self.elem.using.store(false, Ordering::Release);
+            elem.using.store(false, Ordering::Release);
             return Poll::Ready(result);
         }
-        self.elem.waker.register(cx.waker());
+        elem.waker.register(cx.waker());
         Poll::Pending
     }
 }
