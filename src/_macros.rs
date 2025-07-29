@@ -1,7 +1,7 @@
 macro_rules! define_id {
     ($name:ident, $id:ty) => {
         #[repr(transparent)]
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
         pub struct $name(pub $id);
 
         impl From<$id> for $name {

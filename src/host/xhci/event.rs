@@ -1,19 +1,9 @@
-use core::{
-    cell::UnsafeCell,
-    sync::atomic::{Ordering, fence},
-};
-
-use alloc::sync::{Arc, Weak};
 use dma_api::DVec;
-use futures::{FutureExt, future::LocalBoxFuture};
-use log::{debug, trace};
-use xhci::ring::trb::event::{Allowed, CommandCompletion, CompletionCode};
+use mbarrier::mb;
+use xhci::ring::trb::event::Allowed;
 
 use super::{XhciRegisters, ring::Ring};
-use crate::{
-    err::*,
-    wait::{WaitMap, Waiter},
-};
+use crate::err::*;
 
 #[repr(C)]
 pub struct EventRingSte {
@@ -22,39 +12,16 @@ pub struct EventRingSte {
     _reserved: [u8; 6],
 }
 
-pub struct RingWait(UnsafeCell<WaitMap<Result<CommandCompletion>>>);
-
-unsafe impl Send for RingWait {}
-unsafe impl Sync for RingWait {}
-
-impl RingWait {
-    fn new() -> Self {
-        RingWait(UnsafeCell::new(WaitMap::new(&[])))
-    }
-
-    unsafe fn insert(&self, id: u64) {
-        unsafe {
-            (*self.0.get()).insert(id);
-        }
-    }
-
-    pub(crate) fn wait_for_result(&self, id: u64) -> Waiter<'_, Result<CommandCompletion>> {
-        unsafe { (*self.0.get()).wait_for_result(id) }
-    }
-}
-
 pub struct EventRing {
     pub ring: Ring,
     pub ste: DVec<EventRingSte>,
-    cmd_results: Arc<RingWait>,
-    reg: XhciRegisters,
 }
 
 unsafe impl Send for EventRing {}
 unsafe impl Sync for EventRing {}
 
 impl EventRing {
-    pub fn new(reg: XhciRegisters) -> Result<Self> {
+    pub fn new() -> Result<Self> {
         let ring = Ring::new(true, dma_api::Direction::Bidirectional)?;
 
         let mut ste =
@@ -68,75 +35,7 @@ impl EventRing {
 
         ste.set(0, ste0);
 
-        Ok(Self {
-            ring,
-            ste,
-            cmd_results: Arc::new(RingWait::new()),
-            reg,
-        })
-    }
-
-    pub fn ring_wait(&self) -> Weak<RingWait> {
-        Arc::downgrade(&self.cmd_results)
-    }
-
-    pub fn listen_ring(&mut self, ring: &Ring) {
-        let g = self.reg.disable_irq_guard();
-        for id in (0..ring.len()).map(|i| ring.trb_bus_addr(i)) {
-            unsafe { self.cmd_results.insert(id) };
-        }
-        drop(g);
-    }
-
-    pub fn wait_cmd_completion(
-        &mut self,
-        cmd_trb_addr: u64,
-    ) -> LocalBoxFuture<'_, Result<CommandCompletion>> {
-        self.cmd_results.wait_for_result(cmd_trb_addr).boxed_local()
-    }
-
-    pub fn clean_events(&mut self) -> usize {
-        let mut count = 0;
-
-        while let Some(allowed) = self.next() {
-            match allowed {
-                Allowed::CommandCompletion(c) => {
-                    let addr = c.command_trb_pointer();
-                    trace!("[EVENT] << {allowed:?} @{addr:X}");
-
-                    let r = match c.completion_code() {
-                        Ok(code) => {
-                            if matches!(code, CompletionCode::Success) {
-                                Ok(c)
-                            } else {
-                                Err(USBError::TransferEventError(code))
-                            }
-                        }
-                        Err(_e) => Err(USBError::Unknown),
-                    };
-
-                    unsafe {
-                        (*self.cmd_results.0.get()).set_result(addr, r);
-                    }
-                }
-                Allowed::PortStatusChange(st) => {
-                    debug!("port change: {}", st.port_id());
-                }
-                Allowed::TransferEvent(c) => {
-                    let addr = c.trb_pointer();
-                    trace!("[EVENT] << {allowed:?} @{addr:X}");
-                    debug!("transfer event: {c:?}");
-                    let slot_id = c.slot_id();
-                    let dci = c.endpoint_id();
-                }
-                _ => {
-                    debug!("unhandled event {allowed:?}");
-                }
-            }
-            count += 1;
-        }
-
-        count
+        Ok(Self { ring, ste })
     }
 
     /// 完成一次循环返回 true
@@ -148,7 +47,7 @@ impl EventRing {
         if flag != allowed.cycle_bit() {
             return None;
         }
-        fence(Ordering::SeqCst);
+        mb();
         self.ring.inc_deque();
         Some(allowed)
     }
@@ -162,11 +61,5 @@ impl EventRing {
 
     pub fn len(&self) -> usize {
         self.ste.len()
-    }
-
-    pub fn set_result(&mut self, id: u64, result: Result<CommandCompletion>) {
-        unsafe {
-            (*self.cmd_results.0.get()).set_result(id, result);
-        }
     }
 }

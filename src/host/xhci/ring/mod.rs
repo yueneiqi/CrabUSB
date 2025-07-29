@@ -152,12 +152,8 @@ impl Ring {
     pub fn current_trb_addr(&self) -> u64 {
         self.trb_bus_addr(self.i)
     }
+
+    pub fn trb_bus_addr_list(&self) -> impl Iterator<Item = u64> + '_ {
+        (0..self.len()).map(move |i| self.trb_bus_addr(i))
+    }
 }
-
-#[repr(transparent)]
-pub struct UnsafeShare<T>(UnsafeCell<T>);
-
-unsafe impl<T> Send for UnsafeShare<T> {}
-unsafe impl<T> Sync for UnsafeShare<T> {}
-
-

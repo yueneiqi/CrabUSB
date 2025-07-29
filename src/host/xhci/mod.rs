@@ -1,21 +1,13 @@
-use core::{
-    hint::spin_loop,
-    num::NonZeroUsize,
-    ptr::NonNull,
-    sync::atomic::{Ordering, fence},
-    time::Duration,
-};
+use core::{hint::spin_loop, num::NonZeroUsize, ptr::NonNull, time::Duration};
 
 use alloc::{boxed::Box, vec::Vec};
-use context::{ScratchpadBufferArray, XhciSlot};
+use context::ScratchpadBufferArray;
 use future::LocalBoxFuture;
 use futures::{prelude::*, task::AtomicWaker};
 use log::*;
-use ring::{Ring, TrbData};
 use xhci::{
     ExtendedCapability,
     accessor::Mapper,
-    context::{Input32Byte, InputHandler},
     extended_capabilities::{self, usb_legacy_support_capability::UsbLegacySupport},
     registers::doorbell,
     ring::trb::{command, event::CommandCompletion},
@@ -480,33 +472,6 @@ impl Xhci {
 
     fn root(&mut self) -> Result<&mut Root> {
         self.root.as_mut().ok_or(USBError::NotInitialized)
-    }
-}
-
-struct Data {
-    dev_list: context::DeviceContextList,
-    cmd: Ring,
-    event: event::EventRing,
-    scratchpad_buf_arr: Option<ScratchpadBufferArray>,
-}
-
-impl Data {
-    fn new(max_slots: usize, reg: XhciRegisters) -> Result<Self> {
-        let cmd = Ring::new_with_len(
-            0x1000 / size_of::<TrbData>(),
-            true,
-            dma_api::Direction::Bidirectional,
-        )?;
-        let mut event = event::EventRing::new(reg)?;
-
-        event.listen_ring(&cmd);
-
-        Ok(Self {
-            dev_list: context::DeviceContextList::new(max_slots)?,
-            cmd,
-            event,
-            scratchpad_buf_arr: None,
-        })
     }
 }
 

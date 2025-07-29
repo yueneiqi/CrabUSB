@@ -1,5 +1,5 @@
 use alloc::{boxed::Box, collections::btree_map::BTreeMap};
-use log::{debug, trace};
+use log::{debug, trace, warn};
 use mbarrier::wmb;
 use xhci::{
     context::{Input32Byte, InputHandler},
@@ -17,13 +17,14 @@ use crate::{
         Direction,
         control::{ControlTransfer, Recipient, Request, RequestType, TransferType},
     },
+    wait::WaitMap,
     xhci::{
         Registers, XhciRegisters, append_port_to_route_string,
         context::{DeviceContextList, ScratchpadBufferArray, XhciSlot},
         def::{Dci, SlotId},
         event::EventRing,
         parse_default_max_packet_size_from_port_speed,
-        ring::{Ring, TrbData, WeakTransferRing},
+        ring::{Ring, TransferRingWaitWeak, TrbData},
     },
 };
 
@@ -32,7 +33,9 @@ pub struct Root {
     pub event_ring: EventRing,
     pub dev_list: DeviceContextList,
     pub cmd: Ring,
+    cmd_wait: WaitMap<CommandCompletion>,
     pub scratchpad_buf_arr: Option<ScratchpadBufferArray>,
+
     transfer_ring_map: SlotRingMap,
 }
 
@@ -43,9 +46,9 @@ impl Root {
             true,
             dma_api::Direction::Bidirectional,
         )?;
-        let mut event_ring = EventRing::new(reg.clone())?;
+        let event_ring = EventRing::new()?;
 
-        event_ring.listen_ring(&cmd);
+        let cmd_wait = WaitMap::new(cmd.trb_bus_addr_list());
 
         Ok(Self {
             dev_list: DeviceContextList::new(max_slots)?,
@@ -54,6 +57,7 @@ impl Root {
             scratchpad_buf_arr: None,
             mmio: reg,
             transfer_ring_map: Default::default(),
+            cmd_wait,
         })
     }
 
@@ -61,9 +65,26 @@ impl Root {
         self.mmio.reg()
     }
 
+    async fn wait_cmd_completion(
+        &mut self,
+        cmd_trb_addr: u64,
+    ) -> Result<CommandCompletion, USBError> {
+        let c = self.cmd_wait.wait_for_result(cmd_trb_addr).await;
+        match c.completion_code() {
+            Ok(code) => {
+                if matches!(code, CompletionCode::Success) {
+                    Ok(c)
+                } else {
+                    Err(USBError::TransferEventError(code))
+                }
+            }
+            Err(_e) => Err(USBError::Unknown),
+        }
+    }
+
     pub fn handle_event(&mut self) {
         let erdp = {
-            self.event_ring.clean_events();
+            self.clean_events();
             self.event_ring.erdp()
         };
         {
@@ -85,37 +106,35 @@ impl Root {
         let mut count = 0;
 
         while let Some(allowed) = self.event_ring.next() {
-            match allowed {
-                Allowed::CommandCompletion(c) => {
-                    let addr = c.command_trb_pointer();
-                    trace!("[EVENT] << {allowed:?} @{addr:X}");
-
-                    let r = match c.completion_code() {
-                        Ok(code) => {
-                            if matches!(code, CompletionCode::Success) {
-                                Ok(c)
-                            } else {
-                                Err(USBError::TransferEventError(code))
-                            }
+            unsafe {
+                match allowed {
+                    Allowed::CommandCompletion(c) => {
+                        let addr = c.command_trb_pointer();
+                        trace!("[Command] << {allowed:?} @{addr:X}");
+                        self.cmd_wait.set_result(addr, c);
+                    }
+                    Allowed::PortStatusChange(st) => {
+                        debug!("port change: {}", st.port_id());
+                    }
+                    Allowed::TransferEvent(c) => {
+                        let addr = c.trb_pointer();
+                        trace!("[Transfer] << {allowed:?} @{addr:X}");
+                        debug!("transfer event: {c:?}");
+                        let slot_id = c.slot_id().into();
+                        let dci = c.endpoint_id().into();
+                        if let Some(wait) = self
+                            .transfer_ring_map
+                            .0
+                            .get_mut(&slot_id)
+                            .and_then(|map| map.0.get_mut(&dci))
+                            && let Err(e) = wait.set_result(c.trb_pointer(), c)
+                        {
+                            warn!("err: {e}")
                         }
-                        Err(_e) => Err(USBError::Unknown),
-                    };
-
-                    self.event_ring.set_result(addr, r);
-                }
-                Allowed::PortStatusChange(st) => {
-                    debug!("port change: {}", st.port_id());
-                }
-                Allowed::TransferEvent(c) => {
-                    let addr = c.trb_pointer();
-                    trace!("[EVENT] << {allowed:?} @{addr:X}");
-                    debug!("transfer event: {c:?}");
-                    let slot_id = c.slot_id();
-                    let dci = c.endpoint_id();
-                    
-                }
-                _ => {
-                    debug!("unhandled event {allowed:?}");
+                    }
+                    _ => {
+                        debug!("unhandled event {allowed:?}");
+                    }
                 }
             }
             count += 1;
@@ -131,7 +150,7 @@ impl Root {
             .doorbell
             .write_volatile_at(0, doorbell::Register::default());
 
-        self.event_ring.wait_cmd_completion(trb_addr).await
+        self.wait_cmd_completion(trb_addr).await
     }
 
     async fn device_slot_assignment(&mut self) -> Result<SlotId, USBError> {
@@ -151,16 +170,23 @@ impl Root {
 
         let ctx = self.dev_list.new_ctx(slot_id, 32)?;
 
-        let ring_wait = self.event_ring.ring_wait();
-
-        let mut slot = XhciSlot::new(slot_id, ctx, self.mmio.clone(), ring_wait);
+        let mut slot = {
+            let g = self.mmio.disable_irq_guard();
+            let slot = XhciSlot::new(slot_id, ctx, self.mmio.clone());
+            let ctrl_dci = 1.into();
+            self.transfer_ring_map
+                .0
+                .entry(slot.id)
+                .or_default()
+                .0
+                .insert(ctrl_dci, slot.ring_wait_weak(ctrl_dci).unwrap());
+            drop(g);
+            slot
+        };
 
         self.address(&mut slot, port_idx).await?;
 
         debug!("Slot {slot_id} address complete");
-
-        self.event_ring.listen_ring(slot.ctrl_ring_mut());
-
         trace!("control_fetch_control_point_packet_size");
 
         let data = [0u8; 8];
@@ -184,13 +210,6 @@ impl Root {
         Ok(Box::new(slot))
     }
 
-    fn is_64_byte(&self) -> bool {
-        self.regs()
-            .capability
-            .hccparams1
-            .read_volatile()
-            .addressing_capability()
-    }
     fn port_speed(&self, port: usize) -> u8 {
         self.regs()
             .port_register_set
@@ -204,7 +223,7 @@ impl Root {
         let max_packet_size = parse_default_max_packet_size_from_port_speed(port_speed);
 
         let port_id = port_idx + 1;
-        let dci = 1;
+        let dci = 1.into();
 
         let transfer_ring_0_addr = slot.ep_ring_ref(dci).bus_addr();
 
@@ -233,7 +252,7 @@ impl Root {
         slot_context.set_interrupter_target(0);
         slot_context.set_speed(port_speed);
 
-        let endpoint_0 = input.device_mut().endpoint_mut(dci as _);
+        let endpoint_0 = input.device_mut().endpoint_mut(dci.as_usize());
         endpoint_0.set_endpoint_type(xhci::context::EndpointType::Control);
         endpoint_0.set_max_packet_size(max_packet_size);
         endpoint_0.set_max_burst_size(0);
@@ -268,7 +287,7 @@ impl Root {
 }
 
 #[derive(Default)]
-struct EpRingMap(BTreeMap<Dci, WeakTransferRing>);
+struct EpRingMap(BTreeMap<Dci, TransferRingWaitWeak>);
 
 #[derive(Default)]
 struct SlotRingMap(BTreeMap<SlotId, EpRingMap>);

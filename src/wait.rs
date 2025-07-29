@@ -1,24 +1,76 @@
-use core::task::Poll;
+use core::{cell::UnsafeCell, task::Poll};
 
-use alloc::collections::btree_map::BTreeMap;
+use alloc::{
+    collections::btree_map::BTreeMap,
+    format,
+    sync::{Arc, Weak},
+    vec::Vec,
+};
 use futures::task::AtomicWaker;
 
-pub struct WaitMap<T>(BTreeMap<u64, Elem<T>>);
+use crate::err::USBError;
+
+pub struct WaitMap<T>(Arc<UnsafeCell<WaitMapRaw<T>>>);
 
 unsafe impl<T> Send for WaitMap<T> {}
 unsafe impl<T> Sync for WaitMap<T> {}
+
+impl<T> WaitMap<T> {
+    pub fn new(id_list: impl Iterator<Item = u64>) -> Self {
+        Self(Arc::new(UnsafeCell::new(WaitMapRaw::new(id_list))))
+    }
+
+    pub fn empty() -> Self {
+        Self(Arc::new(UnsafeCell::new(WaitMapRaw::empty())))
+    }
+
+    pub fn insert(&mut self, id: u64) {
+        unsafe { &mut *self.0.get() }.insert(id);
+    }
+
+    pub unsafe fn set_result(&self, id: u64, result: T) {
+        unsafe { (&mut *self.0.get()).set_result(id, result) };
+    }
+
+    pub fn wait_for_result(&mut self, id: u64) -> Waiter<'_, T> {
+        let m = unsafe { &mut *self.0.get() };
+        Waiter { id, wait: m }
+    }
+
+    pub fn handler(&self) -> WaitMapWeak<T> {
+        WaitMapWeak(Arc::downgrade(&self.0))
+    }
+}
+
+#[derive(Clone)]
+pub struct WaitMapWeak<T>(Weak<UnsafeCell<WaitMapRaw<T>>>);
+
+impl<T> WaitMapWeak<T> {
+    pub unsafe fn set_result(&self, id: u64, result: T) -> Result<(), USBError> {
+        let r = self.0.upgrade().ok_or(USBError::ControllerClosed)?;
+        unsafe {
+            (&mut *r.get()).set_result(id, result);
+        }
+        Ok(())
+    }
+}
+
+unsafe impl<T> Send for WaitMapWeak<T> {}
+unsafe impl<T> Sync for WaitMapWeak<T> {}
+
+pub struct WaitMapRaw<T>(BTreeMap<u64, Elem<T>>);
 
 struct Elem<T> {
     result: Option<T>,
     waker: AtomicWaker,
 }
 
-impl<T> WaitMap<T> {
-    pub fn new(id_list: &[u64]) -> Self {
+impl<T> WaitMapRaw<T> {
+    pub fn new(id_list: impl Iterator<Item = u64>) -> Self {
         let mut map = BTreeMap::new();
         for id in id_list {
             map.insert(
-                *id,
+                id,
                 Elem {
                     result: None,
                     waker: AtomicWaker::new(),
@@ -26,6 +78,10 @@ impl<T> WaitMap<T> {
             );
         }
         Self(map)
+    }
+
+    pub fn empty() -> Self {
+        Self(BTreeMap::new())
     }
 
     pub fn insert(&mut self, id: u64) {
@@ -38,8 +94,19 @@ impl<T> WaitMap<T> {
         );
     }
 
-    pub fn set_result(&mut self, id: u64, result: T) {
-        let entry = self.0.get_mut(&id).unwrap();
+    pub unsafe fn set_result(&mut self, id: u64, result: T) {
+        let entry = match self.0.get_mut(&id) {
+            Some(entry) => entry,
+            None => {
+                let ls = self
+                    .0
+                    .keys()
+                    .map(|k| format!("{k:X}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                panic!("WaitMap: set_result called with unknown id {id:X}, known ids: {ls}");
+            }
+        };
         entry.result.replace(result);
         if let Some(wake) = entry.waker.take() {
             wake.wake();
@@ -65,7 +132,7 @@ impl<T> WaitMap<T> {
 
 pub struct Waiter<'a, T> {
     id: u64,
-    wait: &'a mut WaitMap<T>,
+    wait: &'a mut WaitMapRaw<T>,
 }
 
 impl<T> Future for Waiter<'_, T> {

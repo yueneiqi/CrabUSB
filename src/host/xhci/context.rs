@@ -1,24 +1,25 @@
 use core::cell::UnsafeCell;
 
-use alloc::{
-    sync::{Arc, Weak},
-    vec::Vec,
-};
+use alloc::{collections::btree_map::BTreeMap, sync::Arc, vec::Vec};
 use dma_api::{DBox, DSliceMut, DVec, Direction};
 use log::trace;
 use mbarrier::wmb;
 use xhci::{
     context::{Device32Byte, Input32Byte},
     registers::doorbell,
-    ring::trb::transfer::{self, TransferType},
+    ring::trb::{
+        event::TransferEvent,
+        transfer::{self, TransferType},
+    },
 };
 
-use super::{XhciRegisters, event::RingWait, ring::Ring};
+use super::{XhciRegisters, ring::Ring};
 use crate::{
     Slot,
     err::*,
     standard::trans::{self, control::ControlTransfer},
-    xhci::SlotId,
+    wait::{WaitMap, WaitMapWeak},
+    xhci::{SlotId, def::Dci, ring::TransferRingWaitWeak},
 };
 
 pub struct DeviceContextList {
@@ -41,28 +42,37 @@ pub struct XhciSlot {
     pub id: SlotId,
     ctx: Arc<DeviceContext>,
     reg: XhciRegisters,
-    ring_wait: Weak<RingWait>,
+    pub ctrl_wait: WaitMap<TransferEvent>,
+    wait: BTreeMap<Dci, WaitMapWeak<TransferEvent>>,
 }
 
 impl XhciSlot {
-    pub(crate) fn new(
-        slot_id: SlotId,
-        ctx: Arc<DeviceContext>,
-        reg: XhciRegisters,
-        ring_wait: Weak<RingWait>,
-    ) -> Self {
+    pub(crate) fn new(slot_id: SlotId, ctx: Arc<DeviceContext>, reg: XhciRegisters) -> Self {
+        let ctrl = unsafe {
+            let data = &mut *ctx.data.get();
+            let ring = &data.transfer_rings[0];
+            WaitMap::new(ring.trb_bus_addr_list())
+        };
+        let mut wait = BTreeMap::new();
+        wait.insert(1.into(), ctrl.handler());
+
         Self {
             id: slot_id,
             ctx,
             reg,
-            ring_wait,
+            ctrl_wait: ctrl,
+            wait,
         }
     }
 
-    pub fn ep_ring_ref(&self, dci: u8) -> &Ring {
+    pub fn ring_wait_weak(&self, dci: Dci) -> Option<TransferRingWaitWeak> {
+        self.wait.get(&dci).cloned()
+    }
+
+    pub fn ep_ring_ref(&self, dci: Dci) -> &Ring {
         unsafe {
             let data = &*self.ctx.data.get();
-            &data.transfer_rings[dci as usize - 1]
+            &data.transfer_rings[dci.as_usize() - 1]
         }
     }
 
@@ -171,12 +181,7 @@ impl XhciSlot {
             .doorbell
             .write_volatile_at(self.id.as_usize(), bell);
 
-        let _ret = self
-            .ring_wait
-            .upgrade()
-            .ok_or(USBError::ControllerClosed)?
-            .wait_for_result(trb_ptr)
-            .await?;
+        let _ret = self.ctrl_wait.wait_for_result(trb_ptr).await;
 
         if let Some((addr, len)) = urb.data {
             let data_slice =
