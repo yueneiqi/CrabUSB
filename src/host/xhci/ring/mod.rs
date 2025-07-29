@@ -1,5 +1,3 @@
-use core::cell::UnsafeCell;
-
 use dma_api::DVec;
 pub use dma_api::Direction;
 use log::trace;

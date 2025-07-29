@@ -2,7 +2,7 @@ use dma_api::DVec;
 use mbarrier::mb;
 use xhci::ring::trb::event::Allowed;
 
-use super::{XhciRegisters, ring::Ring};
+use super::ring::Ring;
 use crate::err::*;
 
 #[repr(C)]

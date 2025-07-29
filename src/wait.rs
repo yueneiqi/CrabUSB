@@ -20,14 +20,6 @@ impl<T> WaitMap<T> {
         Self(Arc::new(UnsafeCell::new(WaitMapRaw::new(id_list))))
     }
 
-    pub fn empty() -> Self {
-        Self(Arc::new(UnsafeCell::new(WaitMapRaw::empty())))
-    }
-
-    pub fn insert(&mut self, id: u64) {
-        unsafe { &mut *self.0.get() }.insert(id);
-    }
-
     pub unsafe fn set_result(&self, id: u64, result: T) {
         unsafe { (&mut *self.0.get()).set_result(id, result) };
     }
@@ -37,7 +29,7 @@ impl<T> WaitMap<T> {
         Waiter { id, wait: m }
     }
 
-    pub fn handler(&self) -> WaitMapWeak<T> {
+    pub fn weak(&self) -> WaitMapWeak<T> {
         WaitMapWeak(Arc::downgrade(&self.0))
     }
 }
@@ -46,12 +38,12 @@ impl<T> WaitMap<T> {
 pub struct WaitMapWeak<T>(Weak<UnsafeCell<WaitMapRaw<T>>>);
 
 impl<T> WaitMapWeak<T> {
-    pub unsafe fn set_result(&self, id: u64, result: T) -> Result<(), USBError> {
-        let r = self.0.upgrade().ok_or(USBError::ControllerClosed)?;
+    pub unsafe fn set_result(&self, id: u64, result: T) -> Option<()> {
+        let r = self.0.upgrade()?;
         unsafe {
             (&mut *r.get()).set_result(id, result);
         }
-        Ok(())
+        Some(())
     }
 }
 
@@ -78,20 +70,6 @@ impl<T> WaitMapRaw<T> {
             );
         }
         Self(map)
-    }
-
-    pub fn empty() -> Self {
-        Self(BTreeMap::new())
-    }
-
-    pub fn insert(&mut self, id: u64) {
-        self.0.insert(
-            id,
-            Elem {
-                result: None,
-                waker: AtomicWaker::new(),
-            },
-        );
     }
 
     pub unsafe fn set_result(&mut self, id: u64, result: T) {
@@ -123,10 +101,6 @@ impl<T> WaitMapRaw<T> {
                 Poll::Pending
             }
         }
-    }
-
-    pub fn wait_for_result(&mut self, id: u64) -> Waiter<'_, T> {
-        Waiter { id, wait: self }
     }
 }
 

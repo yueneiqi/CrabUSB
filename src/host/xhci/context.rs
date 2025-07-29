@@ -54,7 +54,7 @@ impl XhciSlot {
             WaitMap::new(ring.trb_bus_addr_list())
         };
         let mut wait = BTreeMap::new();
-        wait.insert(1.into(), ctrl.handler());
+        wait.insert(1.into(), ctrl.weak());
 
         Self {
             id: slot_id,

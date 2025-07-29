@@ -1,4 +1,4 @@
-use alloc::{boxed::Box, collections::btree_map::BTreeMap};
+use alloc::{boxed::Box, collections::btree_map::BTreeMap, sync::Arc};
 use log::{debug, trace, warn};
 use mbarrier::wmb;
 use xhci::{
@@ -20,7 +20,7 @@ use crate::{
     wait::WaitMap,
     xhci::{
         Registers, XhciRegisters, append_port_to_route_string,
-        context::{DeviceContextList, ScratchpadBufferArray, XhciSlot},
+        context::{DeviceContext, DeviceContextList, ScratchpadBufferArray, XhciSlot},
         def::{Dci, SlotId},
         event::EventRing,
         parse_default_max_packet_size_from_port_speed,
@@ -127,9 +127,9 @@ impl Root {
                             .0
                             .get_mut(&slot_id)
                             .and_then(|map| map.0.get_mut(&dci))
-                            && let Err(e) = wait.set_result(c.trb_pointer(), c)
+                            && wait.set_result(c.trb_pointer(), c).is_none()
                         {
-                            warn!("err: {e}")
+                            warn!("ring dropped, slot: {slot_id}, dci: {dci}");
                         }
                     }
                     _ => {
@@ -164,25 +164,31 @@ impl Root {
         Ok(slot_id.into())
     }
 
+    fn new_slot_data(
+        &mut self,
+        slot_id: SlotId,
+        ctx: Arc<DeviceContext>,
+    ) -> Result<XhciSlot, USBError> {
+        let g = self.mmio.disable_irq_guard();
+        let slot = XhciSlot::new(slot_id, ctx, self.mmio.clone());
+        let ctrl_dci = 1.into();
+        self.transfer_ring_map
+            .0
+            .entry(slot.id)
+            .or_default()
+            .0
+            .insert(ctrl_dci, slot.ring_wait_weak(ctrl_dci).unwrap());
+        drop(g);
+        Ok(slot)
+    }
+
     pub async fn new_slot(&mut self, port_idx: usize) -> Result<Box<dyn Slot>, USBError> {
         let slot_id = self.device_slot_assignment().await?;
         debug!("Slot {slot_id} assigned");
 
         let ctx = self.dev_list.new_ctx(slot_id, 32)?;
 
-        let mut slot = {
-            let g = self.mmio.disable_irq_guard();
-            let slot = XhciSlot::new(slot_id, ctx, self.mmio.clone());
-            let ctrl_dci = 1.into();
-            self.transfer_ring_map
-                .0
-                .entry(slot.id)
-                .or_default()
-                .0
-                .insert(ctrl_dci, slot.ring_wait_weak(ctrl_dci).unwrap());
-            drop(g);
-            slot
-        };
+        let mut slot = self.new_slot_data(slot_id, ctx)?;
 
         self.address(&mut slot, port_idx).await?;
 
