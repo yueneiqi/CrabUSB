@@ -21,7 +21,7 @@ log = "0.4"
 mbarrier = "0.1"
 nb = "1.1"
 num_enum = {version = "0.7", default-features = false}
-spin = {version = "0.9"}
+spin = {version = "0.10"}
 thiserror = {version = "2", default-features = false}
 tock-registers = "0.10"
 xhci = "0.9"

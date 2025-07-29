@@ -2,9 +2,7 @@ use core::{cell::UnsafeCell, task::Poll};
 
 use alloc::{
     collections::btree_map::BTreeMap,
-    format,
     sync::{Arc, Weak},
-    vec::Vec,
 };
 use futures::task::AtomicWaker;
 
@@ -74,13 +72,11 @@ impl<T> WaitMapRaw<T> {
         let entry = match self.0.get_mut(&id) {
             Some(entry) => entry,
             None => {
-                let ls = self
-                    .0
-                    .keys()
-                    .map(|k| format!("{k:X}"))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                panic!("WaitMap: set_result called with unknown id {id:X}, known ids: {ls}");
+                let id_0 = self.0.keys().next();
+                let id_end = self.0.keys().last();
+                panic!(
+                    "WaitMap: set_result called with unknown id {id:X}, known ids: [{id_0:X?},{id_end:X?}]"
+                );
             }
         };
         entry.result.replace(result);
