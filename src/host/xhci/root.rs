@@ -210,8 +210,14 @@ impl Root {
         })
         .await?;
 
-        let packet_size = data.last().map(|&len| if len == 0 { 8u8 } else { len });
+        let packet_size = data
+            .last()
+            .map(|&len| if len == 0 { 8u8 } else { len })
+            .unwrap();
         trace!("packet_size: {packet_size:?}");
+
+        self.set_slot_ep_packet_size(&mut slot, 1.into(), packet_size as _)
+            .await?;
 
         Ok(Box::new(slot))
     }
@@ -287,6 +293,32 @@ impl Root {
             .await?;
 
         debug!("Address slot ok {result:?}");
+
+        Ok(())
+    }
+
+    async fn set_slot_ep_packet_size(
+        &mut self,
+        slot: &mut XhciSlot,
+        dci: Dci,
+        max_packet_size: u16,
+    ) -> Result<(), USBError> {
+        slot.modify_input(|input| {
+            let endpoint = input.device_mut().endpoint_mut(dci.as_usize());
+            endpoint.set_max_packet_size(max_packet_size);
+        });
+
+        wmb();
+
+        let result = self
+            .post_cmd(command::Allowed::EvaluateContext(
+                *command::EvaluateContext::default()
+                    .set_slot_id(slot.id.into())
+                    .set_input_context_pointer(slot.input_bus_addr()),
+            ))
+            .await?;
+
+        debug!("Set packet size ok {result:?}");
 
         Ok(())
     }
