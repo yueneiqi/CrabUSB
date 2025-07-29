@@ -33,10 +33,10 @@ pub struct Root {
     pub event_ring: EventRing,
     pub dev_list: DeviceContextList,
     pub cmd: Ring,
-    cmd_wait: WaitMap<CommandCompletion>,
     pub scratchpad_buf_arr: Option<ScratchpadBufferArray>,
 
-    transfer_wait: WaitMap<TransferEvent>,
+    wait_transfer: WaitMap<TransferEvent>,
+    wait_cmd: WaitMap<CommandCompletion>,
 }
 
 impl Root {
@@ -56,8 +56,8 @@ impl Root {
             event_ring,
             scratchpad_buf_arr: None,
             reg,
-            transfer_wait: WaitMap::empty(),
-            cmd_wait,
+            wait_transfer: WaitMap::empty(),
+            wait_cmd: cmd_wait,
         })
     }
 
@@ -66,7 +66,7 @@ impl Root {
         cmd_trb_addr: u64,
     ) -> Result<CommandCompletion, USBError> {
         let c = self
-            .cmd_wait
+            .wait_cmd
             .try_wait_for_result(cmd_trb_addr)
             .unwrap()
             .await;
@@ -110,7 +110,7 @@ impl Root {
                     Allowed::CommandCompletion(c) => {
                         let addr = c.command_trb_pointer();
                         trace!("[Command] << {allowed:?} @{addr:X}");
-                        self.cmd_wait.set_result(addr, c);
+                        self.wait_cmd.set_result(addr, c);
                     }
                     Allowed::PortStatusChange(st) => {
                         debug!("port change: {}", st.port_id());
@@ -120,7 +120,7 @@ impl Root {
                         trace!("[Transfer] << {allowed:?} @{addr:X}");
                         debug!("transfer event: {c:?}");
 
-                        self.transfer_wait.set_result(c.trb_pointer(), c)
+                        self.wait_transfer.set_result(c.trb_pointer(), c)
                     }
                     _ => {
                         debug!("unhandled event {allowed:?}");
@@ -155,7 +155,7 @@ impl Root {
     }
 
     fn litsen_transfer(&mut self, ring: &Ring) {
-        self.transfer_wait.append(ring.trb_bus_addr_list());
+        self.wait_transfer.append(ring.trb_bus_addr_list());
     }
 
     fn new_slot_data(
@@ -164,7 +164,7 @@ impl Root {
         ctx: Arc<DeviceContext>,
     ) -> Result<XhciSlot, USBError> {
         let g = self.reg.disable_irq_guard();
-        let mut slot = XhciSlot::new(slot_id, ctx, self.reg.clone(), self.transfer_wait.weak());
+        let mut slot = XhciSlot::new(slot_id, ctx, self.reg.clone(), self.wait_transfer.weak());
         self.litsen_transfer(slot.ctrl_ring_mut());
         drop(g);
         Ok(slot)

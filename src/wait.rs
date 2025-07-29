@@ -48,14 +48,6 @@ impl<T> WaitMap<T> {
 pub struct WaitMapWeak<T>(Weak<UnsafeCell<WaitMapRaw<T>>>);
 
 impl<T> WaitMapWeak<T> {
-    pub unsafe fn set_result(&self, id: u64, result: T) -> Option<()> {
-        let r = self.0.upgrade()?;
-        unsafe {
-            (&mut *r.get()).set_result(id, result);
-        }
-        Some(())
-    }
-
     pub fn try_wait_for_result(&self, id: u64) -> Option<Waiter<'_, T>> {
         let r = self.0.upgrade()?;
         unsafe { (&mut *r.get()).try_wait_for_result(id) }
