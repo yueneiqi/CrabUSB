@@ -46,7 +46,8 @@ mod tests {
             let ls = host.probe().await.unwrap();
 
             for slot in ls {
-                println!("slot");
+                println!("slot ");
+                drop(slot);
             }
         });
     }
