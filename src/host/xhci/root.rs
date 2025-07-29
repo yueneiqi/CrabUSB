@@ -65,7 +65,11 @@ impl Root {
         &mut self,
         cmd_trb_addr: u64,
     ) -> Result<CommandCompletion, USBError> {
-        let c = self.cmd_wait.wait_for_result(cmd_trb_addr).await;
+        let c = self
+            .cmd_wait
+            .try_wait_for_result(cmd_trb_addr)
+            .unwrap()
+            .await;
         match c.completion_code() {
             Ok(code) => {
                 if matches!(code, CompletionCode::Success) {

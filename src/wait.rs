@@ -1,10 +1,15 @@
-use core::{cell::UnsafeCell, task::Poll};
+use core::{
+    cell::UnsafeCell,
+    sync::atomic::{AtomicBool, Ordering},
+    task::Poll,
+};
 
 use alloc::{
     collections::btree_map::BTreeMap,
     sync::{Arc, Weak},
 };
 use futures::task::AtomicWaker;
+use spin::Mutex;
 
 pub struct WaitMap<T>(Arc<UnsafeCell<WaitMapRaw<T>>>);
 
@@ -20,9 +25,8 @@ impl<T> WaitMap<T> {
         unsafe { (&mut *self.0.get()).set_result(id, result) };
     }
 
-    pub fn wait_for_result(&mut self, id: u64) -> Waiter<'_, T> {
-        let m = unsafe { &mut *self.0.get() };
-        Waiter { id, wait: m }
+    pub fn try_wait_for_result(&self, id: u64) -> Option<Waiter<'_, T>> {
+        unsafe { (&mut *self.0.get()).try_wait_for_result(id) }
     }
 
     pub fn weak(&self) -> WaitMapWeak<T> {
@@ -41,6 +45,11 @@ impl<T> WaitMapWeak<T> {
         }
         Some(())
     }
+
+    pub fn try_wait_for_result(&self, id: u64) -> Option<Waiter<'_, T>> {
+        let r = self.0.upgrade()?;
+        unsafe { (&mut *r.get()).try_wait_for_result(id) }
+    }
 }
 
 unsafe impl<T> Send for WaitMapWeak<T> {}
@@ -51,6 +60,8 @@ pub struct WaitMapRaw<T>(BTreeMap<u64, Elem<T>>);
 struct Elem<T> {
     result: Option<T>,
     waker: AtomicWaker,
+    using: AtomicBool,
+    result_ok: AtomicBool,
 }
 
 impl<T> WaitMapRaw<T> {
@@ -62,6 +73,8 @@ impl<T> WaitMapRaw<T> {
                 Elem {
                     result: None,
                     waker: AtomicWaker::new(),
+                    using: AtomicBool::new(false),
+                    result_ok: AtomicBool::new(false),
                 },
             );
         }
@@ -80,27 +93,32 @@ impl<T> WaitMapRaw<T> {
             }
         };
         entry.result.replace(result);
+        entry.result_ok.store(true, Ordering::Release);
         if let Some(wake) = entry.waker.take() {
             wake.wake();
         }
     }
 
-    fn poll(&mut self, id: u64, cx: &mut core::task::Context<'_>) -> Poll<T> {
-        let entry = self.0.get_mut(&id).unwrap();
+    fn try_wait_for_result(&mut self, id: u64) -> Option<Waiter<'_, T>> {
+        let elem = self
+            .0
+            .get_mut(&id)
+            .expect("WaitMap: wait_for_result called with unknown id");
 
-        match entry.result.take() {
-            Some(v) => Poll::Ready(v),
-            None => {
-                entry.waker.register(cx.waker());
-                Poll::Pending
-            }
+        if elem
+            .using
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok()
+        {
+            Some(Waiter { elem })
+        } else {
+            None
         }
     }
 }
 
 pub struct Waiter<'a, T> {
-    id: u64,
-    wait: &'a mut WaitMapRaw<T>,
+    elem: &'a mut Elem<T>,
 }
 
 impl<T> Future for Waiter<'_, T> {
@@ -110,7 +128,16 @@ impl<T> Future for Waiter<'_, T> {
         mut self: core::pin::Pin<&mut Self>,
         cx: &mut core::task::Context<'_>,
     ) -> core::task::Poll<Self::Output> {
-        let addr = self.id;
-        self.wait.poll(addr, cx)
+        if self.elem.result_ok.load(Ordering::Acquire) {
+            let result = self
+                .elem
+                .result
+                .take()
+                .expect("Waiter polled after result was set");
+            self.elem.using.store(false, Ordering::Release);
+            return Poll::Ready(result);
+        }
+        self.elem.waker.register(cx.waker());
+        Poll::Pending
     }
 }

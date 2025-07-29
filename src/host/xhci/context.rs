@@ -180,7 +180,7 @@ impl XhciSlot {
             .doorbell
             .write_volatile_at(self.id.as_usize(), bell);
 
-        let _ret = self.ctrl_wait.wait_for_result(trb_ptr).await;
+        let _ret = self.ctrl_wait.try_wait_for_result(trb_ptr).unwrap().await;
 
         if let Some((addr, len)) = urb.data {
             let data_slice =
