@@ -24,18 +24,11 @@ use xhci::{
 mod context;
 mod def;
 mod event;
-mod host;
 mod ring;
+mod root;
 
 use super::{Controller, Slot};
-use crate::{
-    err::*,
-    sleep,
-    standard::trans::{
-        Direction,
-        control::{ControlTransfer, Recipient, Request, RequestType, TransferType},
-    },
-};
+use crate::{err::*, sleep, xhci::root::Root};
 use def::*;
 
 type Registers = xhci::Registers<MemMapper>;
@@ -85,7 +78,7 @@ impl Drop for DisableIrqGuard {
 
 pub struct Xhci {
     reg_base: XhciRegisters,
-    data: Option<Data>,
+    root: Option<Root>,
     port_wake: AtomicWaker,
 }
 
@@ -97,7 +90,7 @@ impl Controller for Xhci {
             self.init_ext_caps().await?;
             self.chip_hardware_reset().await?;
             let max_slots = self.setup_max_device_slots();
-            self.data = Some(Data::new(max_slots as _, self.reg_base.clone())?);
+            self.root = Some(Root::new(max_slots as _, self.reg_base.clone())?);
             self.setup_dcbaap()?;
             self.set_cmd_ring()?;
             self.init_irq()?;
@@ -122,23 +115,10 @@ impl Controller for Xhci {
     fn handle_irq(&mut self) {
         let mut sts = self.regs().operational.usbsts.read_volatile();
         if sts.event_interrupt() {
-            let erdp = {
-                let event = &mut self.data().unwrap().event;
-                event.clean_events();
-                event.erdp()
-            };
-            {
-                let mut regs = self.regs();
-                let mut irq = regs.interrupter_register_set.interrupter_mut(0);
-
-                irq.erdp.update_volatile(|r| {
-                    r.set_event_ring_dequeue_pointer(erdp);
-                    r.clear_event_handler_busy();
-                });
-
-                irq.iman.update_volatile(|r| {
-                    r.clear_interrupt_pending();
-                });
+            if let Some(root) = self.root.as_mut() {
+                root.handle_event();
+            } else {
+                warn!("[XHCI] Not initialized, cannot handle event");
             }
 
             sts.clear_event_interrupt();
@@ -166,7 +146,7 @@ impl Controller for Xhci {
             let port_idx_list = self.port_idx_list();
 
             for idx in port_idx_list {
-                let slot = self.new_slot(idx).await?;
+                let slot = self.root()?.new_slot(idx).await?;
                 slots.push(slot);
             }
 
@@ -180,7 +160,7 @@ impl Xhci {
     pub fn new(mmio_base: NonNull<u8>) -> Self {
         Self {
             reg_base: XhciRegisters::new(mmio_base),
-            data: None,
+            root: None,
             port_wake: AtomicWaker::new(),
         }
     }
@@ -242,7 +222,7 @@ impl Xhci {
     }
 
     fn setup_dcbaap(&mut self) -> Result {
-        let dcbaa_addr = self.data()?.dev_list.dcbaa.bus_addr();
+        let dcbaa_addr = self.root()?.dev_list.dcbaa.bus_addr();
         debug!("DCBAAP: {dcbaa_addr:X}");
         self.regs().operational.dcbaap.update_volatile(|r| {
             r.set(dcbaa_addr);
@@ -252,8 +232,8 @@ impl Xhci {
     }
 
     fn set_cmd_ring(&mut self) -> Result {
-        let crcr = self.data()?.cmd.trbs.bus_addr();
-        let cycle = self.data()?.cmd.cycle;
+        let crcr = self.root()?.cmd.trbs.bus_addr();
+        let cycle = self.root()?.cmd.cycle;
 
         debug!("CRCR: {crcr:X}");
         self.regs().operational.crcr.update_volatile(|r| {
@@ -276,9 +256,9 @@ impl Xhci {
             r.clear_interrupter_enable();
         });
 
-        let erstz = self.data()?.event.len();
-        let erdp = self.data()?.event.erdp();
-        let erstba = self.data()?.event.erstba();
+        let erstz = self.root()?.event_ring.len();
+        let erdp = self.root()?.event_ring.erdp();
+        let erstba = self.root()?.event_ring.erstba();
 
         {
             let mut ir0 = regs.interrupter_register_set.interrupter_mut(0);
@@ -343,13 +323,13 @@ impl Xhci {
 
             let bus_addr = scratchpad_buf_arr.bus_addr();
 
-            self.data()?.dev_list.dcbaa.set(0, bus_addr);
+            self.root()?.dev_list.dcbaa.set(0, bus_addr);
 
             debug!("Setting up {buf_count} scratchpads, at {bus_addr:#0x}");
             scratchpad_buf_arr
         };
 
-        self.data()?.scratchpad_buf_arr = Some(scratchpad_buf_arr);
+        self.root()?.scratchpad_buf_arr = Some(scratchpad_buf_arr);
 
         Ok(())
     }
@@ -375,13 +355,7 @@ impl Xhci {
     }
 
     async fn post_cmd(&mut self, trb: command::Allowed) -> Result<CommandCompletion> {
-        let trb_addr = self.data()?.cmd.enque_command(trb);
-        fence(Ordering::Release);
-        self.regs()
-            .doorbell
-            .write_volatile_at(0, doorbell::Register::default());
-
-        self.data()?.event.wait_cmd_completion(trb_addr).await
+        self.root()?.post_cmd(trb).await
     }
 
     fn reset_ports(&mut self) {
@@ -495,129 +469,6 @@ impl Xhci {
 
         port_idx_list
     }
-    async fn device_slot_assignment(&mut self) -> Result<SlotId> {
-        // enable slot
-        let result = self
-            .post_cmd(command::Allowed::EnableSlot(command::EnableSlot::default()))
-            .await?;
-
-        let slot_id = result.slot_id();
-        trace!("assigned slot id: {slot_id}");
-        Ok(slot_id.into())
-    }
-
-    async fn new_slot(&mut self, port_idx: usize) -> Result<Box<dyn Slot>> {
-        let slot_id = self.device_slot_assignment().await?;
-        debug!("Slot {slot_id} assigned");
-
-        let ctx = self.data()?.dev_list.new_ctx(slot_id, 32)?;
-
-        let ring_wait = self.data()?.event.ring_wait();
-
-        let mut slot = XhciSlot::new(slot_id, ctx, self.reg_base.clone(), ring_wait);
-
-        self.address(&mut slot, port_idx).await?;
-
-        debug!("Slot {slot_id} address complete");
-
-        self.data()?.event.listen_ring(slot.ctrl_ring_mut());
-
-        trace!("control_fetch_control_point_packet_size");
-
-        let data = [0u8; 8];
-
-        slot.control_transfer(ControlTransfer {
-            request_type: RequestType::new(
-                Direction::In,
-                TransferType::Standard,
-                Recipient::Device,
-            ),
-            request: Request::GetDescriptor,
-            index: 0,
-            value: 1 << 8,
-            data: Some((data.as_ptr() as usize, data.len() as _)),
-        })
-        .await?;
-
-        let packet_size = data.last().map(|&len| if len == 0 { 8u8 } else { len });
-        trace!("packet_size: {packet_size:?}");
-
-        Ok(Box::new(slot))
-    }
-    fn port_speed(&self, port: usize) -> u8 {
-        self.regs()
-            .port_register_set
-            .read_volatile_at(port)
-            .portsc
-            .port_speed()
-    }
-
-    pub async fn address(&mut self, slot: &mut XhciSlot, port_idx: usize) -> Result {
-        let port_speed = self.port_speed(port_idx);
-        let max_packet_size = parse_default_max_packet_size_from_port_speed(port_speed);
-
-        let port_id = port_idx + 1;
-        let dci = 1;
-
-        let transfer_ring_0_addr = slot.ep_ring_ref(dci).bus_addr();
-
-        trace!("ring0: {transfer_ring_0_addr:#x}");
-
-        let ring_cycle_bit = slot.ep_ring_ref(dci).cycle;
-
-        let mut input = Input32Byte::default();
-        let control_context = input.control_mut();
-        control_context.set_add_context_flag(0);
-        control_context.set_add_context_flag(1);
-        for i in 2..32 {
-            control_context.clear_drop_context_flag(i);
-        }
-
-        let slot_context = input.device_mut().slot_mut();
-        slot_context.clear_multi_tt();
-        slot_context.clear_hub();
-        slot_context.set_route_string(append_port_to_route_string(0, 0)); // for now, not support more hub ,so hardcode as 0.//TODO: generate route string
-        slot_context.set_context_entries(1);
-        slot_context.set_max_exit_latency(0);
-        slot_context.set_root_hub_port_number(port_id as _); //todo: to use port number
-        slot_context.set_number_of_ports(0);
-        slot_context.set_parent_hub_slot_id(0);
-        slot_context.set_tt_think_time(0);
-        slot_context.set_interrupter_target(0);
-        slot_context.set_speed(port_speed);
-
-        let endpoint_0 = input.device_mut().endpoint_mut(dci as _);
-        endpoint_0.set_endpoint_type(xhci::context::EndpointType::Control);
-        endpoint_0.set_max_packet_size(max_packet_size);
-        endpoint_0.set_max_burst_size(0);
-        endpoint_0.set_error_count(3);
-        endpoint_0.set_tr_dequeue_pointer(transfer_ring_0_addr);
-        if ring_cycle_bit {
-            endpoint_0.set_dequeue_cycle_state();
-        } else {
-            endpoint_0.clear_dequeue_cycle_state();
-        }
-        endpoint_0.set_interval(0);
-        endpoint_0.set_max_primary_streams(0);
-        endpoint_0.set_mult(0);
-        endpoint_0.set_error_count(3);
-
-        slot.set_input(input);
-
-        fence(Ordering::Release);
-
-        let result = self
-            .post_cmd(command::Allowed::AddressDevice(
-                *command::AddressDevice::new()
-                    .set_slot_id(slot.id.into())
-                    .set_input_context_pointer(slot.input_bus_addr()),
-            ))
-            .await?;
-
-        debug!("Address slot ok {result:?}");
-
-        Ok(())
-    }
 
     fn is_64_byte(&self) -> bool {
         self.regs()
@@ -627,8 +478,8 @@ impl Xhci {
             .addressing_capability()
     }
 
-    fn data(&mut self) -> Result<&mut Data> {
-        self.data.as_mut().ok_or(USBError::NotInitialized)
+    fn root(&mut self) -> Result<&mut Root> {
+        self.root.as_mut().ok_or(USBError::NotInitialized)
     }
 }
 

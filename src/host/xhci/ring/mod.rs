@@ -1,3 +1,5 @@
+use core::cell::UnsafeCell;
+
 use dma_api::DVec;
 pub use dma_api::Direction;
 use log::trace;
@@ -6,6 +8,7 @@ use xhci::ring::trb::{Link, command, transfer};
 use crate::{err::*, page_size};
 
 mod trans;
+pub use trans::*;
 
 const TRB_LEN: usize = 4;
 const TRB_SIZE: usize = size_of::<TrbData>();
@@ -150,3 +153,11 @@ impl Ring {
         self.trb_bus_addr(self.i)
     }
 }
+
+#[repr(transparent)]
+pub struct UnsafeShare<T>(UnsafeCell<T>);
+
+unsafe impl<T> Send for UnsafeShare<T> {}
+unsafe impl<T> Sync for UnsafeShare<T> {}
+
+

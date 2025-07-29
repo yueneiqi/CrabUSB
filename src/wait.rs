@@ -1,4 +1,4 @@
-use core::{cell::UnsafeCell, task::Poll};
+use core::task::Poll;
 
 use alloc::collections::btree_map::BTreeMap;
 use futures::task::AtomicWaker;

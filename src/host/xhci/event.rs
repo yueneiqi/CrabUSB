@@ -163,4 +163,10 @@ impl EventRing {
     pub fn len(&self) -> usize {
         self.ste.len()
     }
+
+    pub fn set_result(&mut self, id: u64, result: Result<CommandCompletion>) {
+        unsafe {
+            (*self.cmd_results.0.get()).set_result(id, result);
+        }
+    }
 }

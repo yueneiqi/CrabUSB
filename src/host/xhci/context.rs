@@ -1,7 +1,4 @@
-use core::{
-    cell::UnsafeCell,
-    sync::atomic::{Ordering, fence},
-};
+use core::cell::UnsafeCell;
 
 use alloc::{
     sync::{Arc, Weak},

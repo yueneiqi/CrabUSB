@@ -1,10 +1,16 @@
-use alloc::sync::Arc;
+use alloc::sync::Weak;
+use xhci::ring::trb::event::TransferEvent;
 
-use crate::xhci::event::RingWait;
+use crate::{
+    wait::WaitMap,
+    xhci::{event::RingWait, ring::UnsafeShare},
+};
 
 use super::Ring;
 
 pub struct TransferRing {
     ring: Ring,
-    wait: RingWait<>,
+    wait: WaitMap<TransferEvent>,
 }
+
+pub type WeakTransferRing = Weak<UnsafeShare<TransferRing>>;
