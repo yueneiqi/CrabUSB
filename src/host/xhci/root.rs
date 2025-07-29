@@ -19,7 +19,7 @@ use crate::{
     },
     wait::WaitMap,
     xhci::{
-        Registers, XhciRegisters, append_port_to_route_string,
+        XhciRegisters, append_port_to_route_string,
         context::{DeviceContext, DeviceContextList, ScratchpadBufferArray, XhciSlot},
         def::{Dci, SlotId},
         event::EventRing,
@@ -29,7 +29,7 @@ use crate::{
 };
 
 pub struct Root {
-    mmio: XhciRegisters,
+    reg: XhciRegisters,
     pub event_ring: EventRing,
     pub dev_list: DeviceContextList,
     pub cmd: Ring,
@@ -55,14 +55,10 @@ impl Root {
             cmd,
             event_ring,
             scratchpad_buf_arr: None,
-            mmio: reg,
+            reg,
             transfer_ring_map: Default::default(),
             cmd_wait,
         })
-    }
-
-    fn regs(&self) -> Registers {
-        self.mmio.reg()
     }
 
     async fn wait_cmd_completion(
@@ -88,8 +84,7 @@ impl Root {
             self.event_ring.erdp()
         };
         {
-            let mut regs = self.regs();
-            let mut irq = regs.interrupter_register_set.interrupter_mut(0);
+            let mut irq = self.reg.interrupter_register_set.interrupter_mut(0);
 
             irq.erdp.update_volatile(|r| {
                 r.set_event_ring_dequeue_pointer(erdp);
@@ -146,7 +141,7 @@ impl Root {
     pub async fn post_cmd(&mut self, trb: command::Allowed) -> Result<CommandCompletion, USBError> {
         let trb_addr = self.cmd.enque_command(trb);
         wmb();
-        self.regs()
+        self.reg
             .doorbell
             .write_volatile_at(0, doorbell::Register::default());
 
@@ -169,8 +164,8 @@ impl Root {
         slot_id: SlotId,
         ctx: Arc<DeviceContext>,
     ) -> Result<XhciSlot, USBError> {
-        let g = self.mmio.disable_irq_guard();
-        let slot = XhciSlot::new(slot_id, ctx, self.mmio.clone());
+        let g = self.reg.disable_irq_guard();
+        let slot = XhciSlot::new(slot_id, ctx, self.reg.clone());
         let ctrl_dci = 1.into();
         self.transfer_ring_map
             .0
@@ -223,7 +218,7 @@ impl Root {
     }
 
     fn port_speed(&self, port: usize) -> u8 {
-        self.regs()
+        self.reg
             .port_register_set
             .read_volatile_at(port)
             .portsc

@@ -16,60 +16,20 @@ use xhci::{
 mod context;
 mod def;
 mod event;
+mod reg;
 mod ring;
 mod root;
 
 use super::{Controller, Slot};
-use crate::{err::*, sleep, xhci::root::Root};
+use crate::{
+    err::*,
+    sleep,
+    xhci::{reg::XhciRegisters, root::Root},
+};
 use def::*;
 
-type Registers = xhci::Registers<MemMapper>;
-// type RegistersExtList = xhci::extended_capabilities::List<MemMapper>;
-// type SupportedProtocol = xhci::extended_capabilities::XhciSupportedProtocol<MemMapper>;
-
-#[derive(Clone)]
-pub(crate) struct XhciRegisters {
-    mmio_base: usize,
-}
-impl XhciRegisters {
-    pub fn new(mmio_base: NonNull<u8>) -> Self {
-        Self {
-            mmio_base: mmio_base.as_ptr() as usize,
-        }
-    }
-
-    pub fn reg(&self) -> Registers {
-        let mapper = MemMapper {};
-        unsafe { Registers::new(self.mmio_base, mapper) }
-    }
-
-    pub fn disable_irq_guard(&self) -> DisableIrqGuard {
-        let mut reg = self.reg();
-        let mut enable = true;
-        reg.operational.usbcmd.update_volatile(|r| {
-            enable = r.interrupter_enable();
-            r.clear_interrupter_enable();
-        });
-        DisableIrqGuard { reg, enable }
-    }
-}
-
-pub struct DisableIrqGuard {
-    reg: Registers,
-    enable: bool,
-}
-impl Drop for DisableIrqGuard {
-    fn drop(&mut self) {
-        if self.enable {
-            self.reg.operational.usbcmd.update_volatile(|r| {
-                r.set_interrupter_enable();
-            });
-        }
-    }
-}
-
 pub struct Xhci {
-    reg_base: XhciRegisters,
+    reg: XhciRegisters,
     root: Option<Root>,
     port_wake: AtomicWaker,
 }
@@ -82,7 +42,7 @@ impl Controller for Xhci {
             self.init_ext_caps().await?;
             self.chip_hardware_reset().await?;
             let max_slots = self.setup_max_device_slots();
-            self.root = Some(Root::new(max_slots as _, self.reg_base.clone())?);
+            self.root = Some(Root::new(max_slots as _, self.reg.clone())?);
             self.setup_dcbaap()?;
             self.set_cmd_ring()?;
             self.init_irq()?;
@@ -105,7 +65,7 @@ impl Controller for Xhci {
     }
 
     fn handle_irq(&mut self) {
-        let mut sts = self.regs().operational.usbsts.read_volatile();
+        let mut sts = self.reg.operational.usbsts.read_volatile();
         if sts.event_interrupt() {
             if let Some(root) = self.root.as_mut() {
                 root.handle_event();
@@ -129,7 +89,7 @@ impl Controller for Xhci {
             sts.clear_host_system_error();
         }
 
-        self.regs().operational.usbsts.write_volatile(sts);
+        self.reg.operational.usbsts.write_volatile(sts);
     }
 
     fn probe(&mut self) -> LocalBoxFuture<'_, Result<Vec<Box<dyn Slot>>>> {
@@ -151,29 +111,24 @@ impl Controller for Xhci {
 impl Xhci {
     pub fn new(mmio_base: NonNull<u8>) -> Self {
         Self {
-            reg_base: XhciRegisters::new(mmio_base),
+            reg: XhciRegisters::new(mmio_base),
             root: None,
             port_wake: AtomicWaker::new(),
         }
     }
 
-    fn regs(&self) -> Registers {
-        self.reg_base.reg()
-    }
-
     async fn chip_hardware_reset(&mut self) -> Result {
         debug!("Reset begin ...");
-        let mut regs = self.regs();
-        regs.operational.usbcmd.update_volatile(|c| {
+        self.reg.operational.usbcmd.update_volatile(|c| {
             c.clear_run_stop();
         });
 
-        while !regs.operational.usbsts.read_volatile().hc_halted() {
+        while !self.reg.operational.usbsts.read_volatile().hc_halted() {
             sleep(Duration::from_millis(10)).await;
         }
 
         debug!("Halted");
-        let o = &mut regs.operational;
+        let o = &mut self.reg.operational;
         debug!("Wait for ready...");
         while o.usbsts.read_volatile().controller_not_ready() {
             sleep(Duration::from_millis(10)).await;
@@ -197,7 +152,7 @@ impl Xhci {
     }
 
     fn setup_max_device_slots(&mut self) -> u8 {
-        let mut regs = self.regs();
+        let regs = &mut self.reg;
         let max_slots = regs
             .capability
             .hcsparams1
@@ -216,7 +171,7 @@ impl Xhci {
     fn setup_dcbaap(&mut self) -> Result {
         let dcbaa_addr = self.root()?.dev_list.dcbaa.bus_addr();
         debug!("DCBAAP: {dcbaa_addr:X}");
-        self.regs().operational.dcbaap.update_volatile(|r| {
+        self.reg.operational.dcbaap.update_volatile(|r| {
             r.set(dcbaa_addr);
         });
 
@@ -228,7 +183,7 @@ impl Xhci {
         let cycle = self.root()?.cmd.cycle;
 
         debug!("CRCR: {crcr:X}");
-        self.regs().operational.crcr.update_volatile(|r| {
+        self.reg.operational.crcr.update_volatile(|r| {
             r.set_command_ring_pointer(crcr);
             if cycle {
                 r.set_ring_cycle_state();
@@ -242,9 +197,8 @@ impl Xhci {
 
     fn init_irq(&mut self) -> Result {
         debug!("Disable interrupts");
-        let mut regs = self.regs();
 
-        regs.operational.usbcmd.update_volatile(|r| {
+        self.reg.operational.usbcmd.update_volatile(|r| {
             r.clear_interrupter_enable();
         });
 
@@ -253,7 +207,7 @@ impl Xhci {
         let erstba = self.root()?.event_ring.erstba();
 
         {
-            let mut ir0 = regs.interrupter_register_set.interrupter_mut(0);
+            let mut ir0 = self.reg.interrupter_register_set.interrupter_mut(0);
 
             debug!("ERDP: {erdp:x}");
 
@@ -278,7 +232,8 @@ impl Xhci {
 
         {
             debug!("Enabling primary interrupter.");
-            regs.interrupter_register_set
+            self.reg
+                .interrupter_register_set
                 .interrupter_mut(0)
                 .iman
                 .update_volatile(|im| {
@@ -288,7 +243,7 @@ impl Xhci {
         }
 
         /* Set the HCD state before we enable the irqs */
-        regs.operational.usbcmd.update_volatile(|r| {
+        self.reg.operational.usbcmd.update_volatile(|r| {
             r.set_interrupter_enable();
             r.set_host_system_error_enable();
             r.set_enable_wrap_event();
@@ -300,7 +255,7 @@ impl Xhci {
         let scratchpad_buf_arr = {
             let buf_count = {
                 let count = self
-                    .regs()
+                    .reg
                     .capability
                     .hcsparams2
                     .read_volatile()
@@ -327,7 +282,7 @@ impl Xhci {
     }
 
     async fn start(&mut self) -> Result {
-        let mut regs = self.regs();
+        let regs = &mut self.reg;
         debug!("Start run");
 
         regs.operational.usbcmd.update_volatile(|r| {
@@ -351,7 +306,7 @@ impl Xhci {
     }
 
     fn reset_ports(&mut self) {
-        let regs = &mut self.regs();
+        let regs = &mut self.reg;
         let port_len = regs.port_register_set.len();
 
         for i in 0..port_len {
@@ -374,11 +329,11 @@ impl Xhci {
     }
 
     fn extended_capabilities(&self) -> Vec<ExtendedCapability<MemMapper>> {
-        let hccparams1 = self.regs().capability.hccparams1.read_volatile();
+        let hccparams1 = self.reg.capability.hccparams1.read_volatile();
         let mapper = MemMapper {};
         let mut out = Vec::new();
         let mut l = match unsafe {
-            extended_capabilities::List::new(self.reg_base.mmio_base, hccparams1, mapper)
+            extended_capabilities::List::new(self.reg.mmio_base, hccparams1, mapper)
         } {
             Some(v) => v,
             None => return out,
@@ -440,9 +395,9 @@ impl Xhci {
 
     fn port_idx_list(&self) -> Vec<usize> {
         let mut port_idx_list = Vec::new();
-        let port_len = self.regs().port_register_set.len();
+        let port_len = self.reg.port_register_set.len();
         for i in 0..port_len {
-            let portsc = &self.regs().port_register_set.read_volatile_at(i).portsc;
+            let portsc = &self.reg.port_register_set.read_volatile_at(i).portsc;
             info!(
                 "Port {}: Enabled: {}, Connected: {}, Speed {}, Power {}",
                 i,
@@ -463,7 +418,7 @@ impl Xhci {
     }
 
     fn is_64_byte(&self) -> bool {
-        self.regs()
+        self.reg
             .capability
             .hccparams1
             .read_volatile()

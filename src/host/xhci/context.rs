@@ -177,7 +177,6 @@ impl XhciSlot {
         bell.set_doorbell_target(1);
 
         self.reg
-            .reg()
             .doorbell
             .write_volatile_at(self.id.as_usize(), bell);
 
