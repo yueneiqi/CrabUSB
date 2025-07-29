@@ -10,7 +10,6 @@ mod tests {
     use bare_test::{
         GetIrqConfig,
         async_std::time,
-        driver::{Descriptor, Device},
         fdt_parser::PciSpace,
         globals::{PlatformInfoKind, global_val},
         irq::{IrqHandleResult, IrqInfo, IrqParam},
@@ -18,7 +17,7 @@ mod tests {
         platform::fdt::GetPciIrqConfig,
         println,
     };
-    use core::time::Duration;
+    use core::{pin::Pin, time::Duration};
     use crab_usb::*;
     use futures::FutureExt;
     use log::*;
@@ -28,31 +27,14 @@ mod tests {
 
     #[test]
     fn test_all() {
-        let info = get_usb_host();
+        spin_on::spin_on(async {
+            let info = get_usb_host();
+            let irq_info = info.irq.clone().unwrap();
 
-        let mut host = Box::pin(info.usb);
+            let mut host = Box::pin(info.usb);
 
-        let ptr: *mut USBHost<Xhci> = host.as_mut().get_mut() as *mut _;
+            register_irq(irq_info, &mut host);
 
-        if let Some(irq) = &info.irq {
-            for one in &irq.cfgs {
-                IrqParam {
-                    intc: irq.irq_parent,
-                    cfg: one.clone(),
-                }
-                .register_builder({
-                    move |_irq| {
-                        unsafe {
-                            (&mut *ptr).handle_irq();
-                        }
-                        IrqHandleResult::Handled
-                    }
-                })
-                .register();
-            }
-        }
-
-        spin_on::spin_on(async move {
             host.init().await.unwrap();
 
             debug!("usb cmd test");
@@ -116,7 +98,7 @@ mod tests {
         let mut bar_alloc = SimpleBarAllocator::default();
 
         for range in pcie.ranges().unwrap() {
-            info!("pcie range: {:?}", range);
+            info!("pcie range: {range:?}");
 
             match range.space {
                 PciSpace::Memory32 => bar_alloc.set_mem32(range.cpu_address as _, range.size as _),
@@ -127,13 +109,13 @@ mod tests {
 
         let base_vaddr = pcie_regs[0];
 
-        info!("Init PCIE @{:?}", base_vaddr);
+        info!("Init PCIE @{base_vaddr:?}");
 
         let mut root = RootComplexGeneric::new(base_vaddr);
 
         // for elem in root.enumerate_keep_bar(None) {
         for elem in root.enumerate(None, Some(bar_alloc)) {
-            debug!("PCI {}", elem);
+            debug!("PCI {elem}");
 
             if let Header::Endpoint(mut ep) = elem.header {
                 ep.update_command(elem.root, |mut cmd| {
@@ -221,6 +203,26 @@ mod tests {
 
         panic!("no xhci found");
     }
+
+    fn register_irq(irq: IrqInfo, host: &mut Pin<Box<USBHost<Xhci>>>) {
+        let ptr: *mut USBHost<Xhci> = host.as_mut().get_mut() as *mut _;
+
+        for one in &irq.cfgs {
+            IrqParam {
+                intc: irq.irq_parent,
+                cfg: one.clone(),
+            }
+            .register_builder({
+                move |_irq| {
+                    unsafe {
+                        (&mut *ptr).handle_irq();
+                    }
+                    IrqHandleResult::Handled
+                }
+            })
+            .register();
+        }
+    }
 }
 
 trait Align {
@@ -229,7 +231,7 @@ trait Align {
 
 impl Align for usize {
     fn align_up(&self, align: usize) -> usize {
-        if *self % align == 0 {
+        if (*self).is_multiple_of(align) {
             *self
         } else {
             *self + align - *self % align

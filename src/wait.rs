@@ -8,8 +8,6 @@ use alloc::{
 };
 use futures::task::AtomicWaker;
 
-use crate::err::USBError;
-
 pub struct WaitMap<T>(Arc<UnsafeCell<WaitMapRaw<T>>>);
 
 unsafe impl<T> Send for WaitMap<T> {}

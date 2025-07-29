@@ -1,42 +1,40 @@
 [package]
-name = "crab-usb"
-version = "0.1.0"
-edition = "2024"
-authors = ["dbydd <dbydd@outlook.com>", "周睿 <zrufo747@outlook.com>"]
-description = "A simple usb host"
-repository = "https://github.com/drivercraft/CrabUSB"
-license = "MIT"
-keywords = ["os", "usb", "xhci", "driver"]
+authors = ["周睿 <zrufo747@outlook.com>", "dbydd <dbydd@outlook.com>"]
 categories = ["embedded", "no-std"]
+description = "A usb host for embedded systems, written in Rust."
+edition = "2024"
+keywords = ["os", "usb", "xhci", "driver"]
+license = "MIT"
+name = "crab-usb"
+repository = "https://github.com/drivercraft/CrabUSB"
+version = "0.1.0"
 
 [dependencies]
-tock-registers = "0.10"
-log = "0.4"
-dma-api = { version = "0.4", features = ["alloc"] }
-nb = "1.1"
 bitflags = "2.8"
+crossbeam = {version = "0.8", features = ["alloc"], default-features = false}
+crossbeam-skiplist = {version = "0.1", features = [
+  "alloc",
+], default-features = false}
+dma-api = {version = "0.4", features = ["alloc"]}
+futures = {version = "0.3", features = ["alloc"], default-features = false}
+log = "0.4"
 mbarrier = "0.1"
-thiserror = { version = "2", default-features = false }
-futures = { version = "0.3", features = ["alloc"], default-features = false }
+nb = "1.1"
+num_enum = {version = "0.7", default-features = false}
+spin = {version = "0.9"}
+thiserror = {version = "2", default-features = false}
+tock-registers = "0.10"
 xhci = "0.9"
-crossbeam = { version = "0.8", features = ["alloc"], default-features = false }
-crossbeam-skiplist = { version = "0.1", features = [
-    "alloc",
-], default-features = false }
-spin = { version = "0.9" }
-num_enum = { version = "0.7", default-features = false }
 
 [dev-dependencies]
 bare-test = "0.5"
+byte-unit = {version = "5.1.6", default-features = false, features = ["byte"]}
 pcie = "0.2"
-byte-unit = { version = "5.1.6", default-features = false, features = ["byte"] }
 spin_on = "0.1.1"
 
 [build-dependencies]
 bare-test-macros = "0.2"
 
-
 [[test]]
-name = "test"
 harness = false
-
+name = "test"
