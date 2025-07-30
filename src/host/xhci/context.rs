@@ -30,10 +30,10 @@ impl ContextData {}
 
 impl DeviceContext {
     fn new() -> Result<Self> {
-        let out = DBox::zero_with_align(dma_api::Direction::Bidirectional, 64)
-            .ok_or(USBError::NoMemory)?;
-        let input = DBox::zero_with_align(dma_api::Direction::Bidirectional, 64)
-            .ok_or(USBError::NoMemory)?;
+        let out =
+            DBox::zero_with_align(dma_api::Direction::FromDevice, 64).ok_or(USBError::NoMemory)?;
+        let input =
+            DBox::zero_with_align(dma_api::Direction::ToDevice, 64).ok_or(USBError::NoMemory)?;
         Ok(Self {
             data: UnsafeCell::new(ContextData {
                 out,

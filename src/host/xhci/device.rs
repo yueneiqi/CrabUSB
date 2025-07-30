@@ -83,7 +83,9 @@ impl Device {
         let ctrl_ring_addr = self.ctx.ctrl_ring().bus_addr();
         // ctrl dci
         let dci = 1;
-        trace!("ctrl ring: {ctrl_ring_addr:#x?}");
+        trace!(
+            "ctrl ring: {ctrl_ring_addr:#x?}, port speed: {port_speed}, max packet size: {max_packet_size}"
+        );
 
         let ring_cycle_bit = self.ctx.ctrl_ring().cycle;
 
@@ -126,19 +128,19 @@ impl Device {
         endpoint_0.set_interval(0);
         endpoint_0.set_max_primary_streams(0);
         endpoint_0.set_mult(0);
-        // 为控制端点设置 Average TRB Length
-        // endpoint_0.set_average_trb_length(8);
 
         self.set_input(input);
 
         mb();
 
+        let input_bus_addr = self.input_bus_addr();
+        trace!("Input context bus address: {input_bus_addr:#x?}");
         let result = self
             .root
             .post_cmd(command::Allowed::AddressDevice(
                 *command::AddressDevice::new()
                     .set_slot_id(self.id.into())
-                    .set_input_context_pointer(self.input_bus_addr()), // .set_block_set_address_request(), // 设置 BSR 位
+                    .set_input_context_pointer(input_bus_addr),
             ))
             .await?;
 
