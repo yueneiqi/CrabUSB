@@ -19,7 +19,7 @@ use crate::{
         self,
         control::{ControlTransfer, Recipient, Request, RequestType},
     },
-    wait::WaitMapWeak,
+    wait::WaitMap,
     xhci::{
         append_port_to_route_string,
         context::DeviceContext,
@@ -34,7 +34,7 @@ pub struct Device {
     id: SlotId,
     root: RootHub,
     ctx: Arc<DeviceContext>,
-    wait: WaitMapWeak<TransferEvent>,
+    wait: WaitMap<TransferEvent>,
     port_id: PortId,
 }
 

@@ -21,7 +21,7 @@ use crate::{
     PortId,
     err::USBError,
     sleep,
-    wait::{WaitMap, WaitMapWeak, Waiter},
+    wait::{WaitMap, Waiter},
     xhci::{
         XhciRegisters,
         context::{DeviceContextList, ScratchpadBufferArray},
@@ -327,8 +327,8 @@ impl RootHub {
         }
     }
 
-    pub fn transfer_waiter(&self) -> WaitMapWeak<TransferEvent> {
-        self.lock().wait_transfer.weak()
+    pub fn transfer_waiter(&self) -> WaitMap<TransferEvent> {
+        self.lock().wait_transfer.clone()
     }
 
     pub fn init(&self) -> Result<(), USBError> {
