@@ -198,7 +198,7 @@ impl Device {
         mb();
 
         let mut bell = doorbell::Register::default();
-        bell.set_doorbell_target(1);
+        bell.set_doorbell_target(Dci::CTRL.raw());
 
         self.root.doorbell(self.id, bell);
 

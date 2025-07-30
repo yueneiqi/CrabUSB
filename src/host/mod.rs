@@ -8,6 +8,8 @@ pub mod xhci;
 use crate::err::*;
 pub use xhci::Xhci;
 
+define_int_type!(PortId, usize);
+
 pub struct USBHost<C>
 where
     C: Controller,

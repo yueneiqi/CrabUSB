@@ -199,12 +199,10 @@ impl Root {
     }
 
     fn start(&mut self) {
-        let regs = &mut self.reg;
-        debug!("Start run");
-
-        regs.operational.usbcmd.update_volatile(|r| {
+        self.reg.operational.usbcmd.update_volatile(|r| {
             r.set_run_stop();
         });
+        debug!("Start run");
     }
 
     pub fn handle_event(&mut self) {
@@ -334,8 +332,7 @@ impl RootHub {
     }
 
     pub fn init(&self) -> Result<(), USBError> {
-        let mut guard = self.try_lock().unwrap();
-        guard.init()
+        self.try_lock().unwrap().init()
     }
 
     #[allow(clippy::mut_from_ref)]
