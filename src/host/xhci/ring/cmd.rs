@@ -1,6 +1,5 @@
 use alloc::sync::Arc;
-use dma_api::Impl;
-use mbarrier::{mb, wmb};
+use mbarrier::mb;
 use spin::Mutex;
 use xhci::{
     registers::doorbell,

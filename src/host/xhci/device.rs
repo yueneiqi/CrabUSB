@@ -233,9 +233,9 @@ impl Device {
         }
     }
 
-    pub fn id(&self) -> SlotId {
-        self.id
-    }
+    // pub fn id(&self) -> SlotId {
+    //     self.id
+    // }
 
     fn set_input(&self, input: Input32Byte) {
         unsafe {
