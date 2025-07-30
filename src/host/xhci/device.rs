@@ -92,14 +92,11 @@ impl Device {
         let mut input = Input32Byte::default();
         let control_context = input.control_mut();
 
-        // 清除所有flags
-        for i in 2..32 {
-            control_context.clear_add_context_flag(i);
-            control_context.clear_drop_context_flag(i);
-        }
-        // 只设置需要的flags：slot context (0) 和 endpoint 0 context (1)
         control_context.set_add_context_flag(0);
         control_context.set_add_context_flag(1);
+        for i in 2..32 {
+            control_context.clear_drop_context_flag(i);
+        }
 
         let slot_context = input.device_mut().slot_mut();
         slot_context.clear_multi_tt();
