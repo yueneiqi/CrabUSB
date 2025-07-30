@@ -30,10 +30,10 @@ impl ContextData {}
 
 impl DeviceContext {
     fn new() -> Result<Self> {
-        let out =
-            DBox::zero_with_align(dma_api::Direction::FromDevice, 64).ok_or(USBError::NoMemory)?;
-        let input =
-            DBox::zero_with_align(dma_api::Direction::ToDevice, 64).ok_or(USBError::NoMemory)?;
+        let out = DBox::zero_with_align(dma_api::Direction::Bidirectional, 64)
+            .ok_or(USBError::NoMemory)?;
+        let input = DBox::zero_with_align(dma_api::Direction::Bidirectional, 64)
+            .ok_or(USBError::NoMemory)?;
         Ok(Self {
             data: UnsafeCell::new(ContextData {
                 out,
@@ -54,7 +54,7 @@ impl DeviceContext {
 impl DeviceContextList {
     pub fn new(max_slots: usize) -> Result<Self> {
         let dcbaa =
-            DVec::zeros(256, 0x1000, dma_api::Direction::FromDevice).ok_or(USBError::NoMemory)?;
+            DVec::zeros(256, 0x1000, dma_api::Direction::ToDevice).ok_or(USBError::NoMemory)?;
 
         Ok(Self {
             dcbaa,
@@ -90,18 +90,23 @@ pub struct ScratchpadBufferArray {
 
 impl ScratchpadBufferArray {
     pub fn new(entries: usize) -> Result<Self> {
-        let entries = DVec::zeros(entries, 64, dma_api::Direction::Bidirectional)
+        let mut entries_vec = DVec::zeros(entries, 64, dma_api::Direction::Bidirectional)
             .ok_or(USBError::NoMemory)?;
 
-        let pages = (0..entries.len())
+        let pages: Vec<DVec<u8>> = (0..entries_vec.len())
             .map(|_| {
                 DVec::<u8>::zeros(0x1000, 0x1000, dma_api::Direction::Bidirectional)
                     .ok_or(USBError::NoMemory)
             })
             .try_collect()?;
 
+        // 将每个页面的地址写入到 entries 数组中
+        for (i, page) in pages.iter().enumerate() {
+            entries_vec.set(i, page.bus_addr());
+        }
+
         Ok(Self {
-            entries,
+            entries: entries_vec,
             _pages: pages,
         })
     }

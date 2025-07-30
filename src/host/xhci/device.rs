@@ -89,11 +89,15 @@ impl Device {
 
         let mut input = Input32Byte::default();
         let control_context = input.control_mut();
-        control_context.set_add_context_flag(0);
-        control_context.set_add_context_flag(1);
+
+        // 清除所有flags
         for i in 2..32 {
+            control_context.clear_add_context_flag(i);
             control_context.clear_drop_context_flag(i);
         }
+        // 只设置需要的flags：slot context (0) 和 endpoint 0 context (1)
+        control_context.set_add_context_flag(0);
+        control_context.set_add_context_flag(1);
 
         let slot_context = input.device_mut().slot_mut();
         slot_context.clear_multi_tt();
@@ -122,6 +126,8 @@ impl Device {
         endpoint_0.set_interval(0);
         endpoint_0.set_max_primary_streams(0);
         endpoint_0.set_mult(0);
+        // 为控制端点设置 Average TRB Length
+        // endpoint_0.set_average_trb_length(8);
 
         self.set_input(input);
 
@@ -132,7 +138,7 @@ impl Device {
             .post_cmd(command::Allowed::AddressDevice(
                 *command::AddressDevice::new()
                     .set_slot_id(self.id.into())
-                    .set_input_context_pointer(self.input_bus_addr()),
+                    .set_input_context_pointer(self.input_bus_addr()), // .set_block_set_address_request(), // 设置 BSR 位
             ))
             .await?;
 
@@ -322,6 +328,19 @@ impl Device {
 
     async fn set_ep_packet_size(&self, dci: Dci, max_packet_size: u16) -> Result<(), USBError> {
         self.modify_input(|input| {
+            // 清除所有flags
+            let control_context = input.control_mut();
+            for i in 0..32 {
+                control_context.clear_add_context_flag(i);
+            }
+            // Drop context flags 只能清除索引 2..=31
+            for i in 2..32 {
+                control_context.clear_drop_context_flag(i);
+            }
+            // 设置slot context和要修改的endpoint context flag
+            control_context.set_add_context_flag(0); // slot context
+            control_context.set_add_context_flag(dci.as_usize()); // endpoint context
+
             let endpoint = input.device_mut().endpoint_mut(dci.as_usize());
             endpoint.set_max_packet_size(max_packet_size);
         });
