@@ -1,7 +1,6 @@
-use core::{hint::spin_loop, num::NonZeroUsize, ptr::NonNull, time::Duration};
+use core::{num::NonZeroUsize, ptr::NonNull, time::Duration};
 
 use alloc::{boxed::Box, vec::Vec};
-use context::ScratchpadBufferArray;
 use future::LocalBoxFuture;
 use futures::{prelude::*, task::AtomicWaker};
 use log::*;
@@ -9,12 +8,12 @@ use xhci::{
     ExtendedCapability,
     accessor::Mapper,
     extended_capabilities::{self, usb_legacy_support_capability::UsbLegacySupport},
-    registers::doorbell,
     ring::trb::{command, event::CommandCompletion},
 };
 
 mod context;
 mod def;
+mod device;
 mod event;
 mod reg;
 mod ring;
@@ -24,13 +23,13 @@ use super::{Controller, Slot};
 use crate::{
     err::*,
     sleep,
-    xhci::{reg::XhciRegisters, root::Root},
+    xhci::{reg::XhciRegisters, root::RootHub},
 };
 use def::*;
 
 pub struct Xhci {
     reg: XhciRegisters,
-    root: Option<Root>,
+    root: Option<RootHub>,
     port_wake: AtomicWaker,
 }
 
@@ -38,18 +37,23 @@ unsafe impl Send for Xhci {}
 
 impl Controller for Xhci {
     fn init(&mut self) -> LocalBoxFuture<'_, Result> {
+        // 4.2 Host Controller Initialization
         async {
             self.init_ext_caps().await?;
+            // After Chip Hardware Reset6 wait until the Controller Not Ready (CNR) flag
+            // in the USBSTS is ‘0’ before writing any xHC Operational or Runtime
+            // registers.
             self.chip_hardware_reset().await?;
+            // Program the Max Device Slots Enabled (MaxSlotsEn) field in the CONFIG
+            // register (5.4.7) to enable the device slots that system software is going to
+            // use.
             let max_slots = self.setup_max_device_slots();
-            self.root = Some(Root::new(max_slots as _, self.reg.clone())?);
-            self.setup_dcbaap()?;
-            self.set_cmd_ring()?;
-            self.init_irq()?;
-            self.setup_scratchpads()?;
-            self.start().await?;
-            self.reset_ports();
-
+            let root_hub = RootHub::new(max_slots as _, self.reg.clone())?;
+            root_hub.init()?;
+            self.root = Some(root_hub);
+            trace!("Root hub initialized with max slots: {max_slots}");
+            self.root()?.wait_for_running().await;
+            self.root()?.lock().reset_ports();
             Ok(())
         }
         .boxed_local()
@@ -65,31 +69,33 @@ impl Controller for Xhci {
     }
 
     fn handle_irq(&mut self) {
-        let mut sts = self.reg.operational.usbsts.read_volatile();
-        if sts.event_interrupt() {
-            if let Some(root) = self.root.as_mut() {
-                root.handle_event();
-            } else {
-                warn!("[XHCI] Not initialized, cannot handle event");
+        unsafe {
+            let mut sts = self.reg.operational.usbsts.read_volatile();
+            if sts.event_interrupt() {
+                if let Some(root) = self.root.as_mut() {
+                    root.force_use().handle_event();
+                } else {
+                    warn!("[XHCI] Not initialized, cannot handle event");
+                }
+
+                sts.clear_event_interrupt();
+            }
+            if sts.port_change_detect() {
+                debug!("Port Change Detected");
+                if let Some(data) = self.port_wake.take() {
+                    data.wake();
+                }
+
+                sts.clear_port_change_detect();
             }
 
-            sts.clear_event_interrupt();
-        }
-        if sts.port_change_detect() {
-            debug!("Port Change Detected");
-            if let Some(data) = self.port_wake.take() {
-                data.wake();
+            if sts.host_system_error() {
+                debug!("Host System Error");
+                sts.clear_host_system_error();
             }
 
-            sts.clear_port_change_detect();
+            self.reg.operational.usbsts.write_volatile(sts);
         }
-
-        if sts.host_system_error() {
-            debug!("Host System Error");
-            sts.clear_host_system_error();
-        }
-
-        self.reg.operational.usbsts.write_volatile(sts);
     }
 
     fn probe(&mut self) -> LocalBoxFuture<'_, Result<Vec<Box<dyn Slot>>>> {
@@ -98,7 +104,7 @@ impl Controller for Xhci {
             let port_idx_list = self.port_idx_list();
 
             for idx in port_idx_list {
-                let slot = self.root()?.new_slot(idx).await?;
+                let slot: Box<dyn Slot> = Box::new(self.root()?.new_device(idx).await?);
                 slots.push(slot);
             }
 
@@ -168,164 +174,8 @@ impl Xhci {
         max_slots
     }
 
-    fn setup_dcbaap(&mut self) -> Result {
-        let dcbaa_addr = self.root()?.dev_list.dcbaa.bus_addr();
-        debug!("DCBAAP: {dcbaa_addr:X}");
-        self.reg.operational.dcbaap.update_volatile(|r| {
-            r.set(dcbaa_addr);
-        });
-
-        Ok(())
-    }
-
-    fn set_cmd_ring(&mut self) -> Result {
-        let crcr = self.root()?.cmd.trbs.bus_addr();
-        let cycle = self.root()?.cmd.cycle;
-
-        debug!("CRCR: {crcr:X}");
-        self.reg.operational.crcr.update_volatile(|r| {
-            r.set_command_ring_pointer(crcr);
-            if cycle {
-                r.set_ring_cycle_state();
-            } else {
-                r.clear_ring_cycle_state();
-            }
-        });
-
-        Ok(())
-    }
-
-    fn init_irq(&mut self) -> Result {
-        debug!("Disable interrupts");
-
-        self.reg.operational.usbcmd.update_volatile(|r| {
-            r.clear_interrupter_enable();
-        });
-
-        let erstz = self.root()?.event_ring.len();
-        let erdp = self.root()?.event_ring.erdp();
-        let erstba = self.root()?.event_ring.erstba();
-
-        {
-            let mut ir0 = self.reg.interrupter_register_set.interrupter_mut(0);
-
-            debug!("ERDP: {erdp:x}");
-
-            ir0.erdp.update_volatile(|r| {
-                r.set_event_ring_dequeue_pointer(erdp);
-                r.set_dequeue_erst_segment_index(0);
-                r.clear_event_handler_busy();
-            });
-
-            debug!("ERSTZ: {erstz:x}");
-            ir0.erstsz.update_volatile(|r| r.set(erstz as _));
-            debug!("ERSTBA: {erstba:X}");
-            ir0.erstba.update_volatile(|r| {
-                r.set(erstba);
-            });
-
-            ir0.imod.update_volatile(|im| {
-                im.set_interrupt_moderation_interval(0x1F);
-                im.set_interrupt_moderation_counter(0);
-            });
-        }
-
-        {
-            debug!("Enabling primary interrupter.");
-            self.reg
-                .interrupter_register_set
-                .interrupter_mut(0)
-                .iman
-                .update_volatile(|im| {
-                    im.set_interrupt_enable();
-                    im.clear_interrupt_pending();
-                });
-        }
-
-        /* Set the HCD state before we enable the irqs */
-        self.reg.operational.usbcmd.update_volatile(|r| {
-            r.set_interrupter_enable();
-            r.set_host_system_error_enable();
-            r.set_enable_wrap_event();
-        });
-        Ok(())
-    }
-
-    fn setup_scratchpads(&mut self) -> Result {
-        let scratchpad_buf_arr = {
-            let buf_count = {
-                let count = self
-                    .reg
-                    .capability
-                    .hcsparams2
-                    .read_volatile()
-                    .max_scratchpad_buffers();
-                debug!("Scratch buf count: {count}");
-                count
-            };
-            if buf_count == 0 {
-                return Ok(());
-            }
-            let scratchpad_buf_arr = ScratchpadBufferArray::new(buf_count as _)?;
-
-            let bus_addr = scratchpad_buf_arr.bus_addr();
-
-            self.root()?.dev_list.dcbaa.set(0, bus_addr);
-
-            debug!("Setting up {buf_count} scratchpads, at {bus_addr:#0x}");
-            scratchpad_buf_arr
-        };
-
-        self.root()?.scratchpad_buf_arr = Some(scratchpad_buf_arr);
-
-        Ok(())
-    }
-
-    async fn start(&mut self) -> Result {
-        let regs = &mut self.reg;
-        debug!("Start run");
-
-        regs.operational.usbcmd.update_volatile(|r| {
-            r.set_run_stop();
-        });
-
-        while regs.operational.usbsts.read_volatile().hc_halted() {
-            sleep(Duration::from_millis(10)).await;
-        }
-
-        info!("Running");
-
-        regs.doorbell
-            .write_volatile_at(0, doorbell::Register::default());
-
-        Ok(())
-    }
-
     async fn post_cmd(&mut self, trb: command::Allowed) -> Result<CommandCompletion> {
         self.root()?.post_cmd(trb).await
-    }
-
-    fn reset_ports(&mut self) {
-        let regs = &mut self.reg;
-        let port_len = regs.port_register_set.len();
-
-        for i in 0..port_len {
-            debug!("Port {i} start reset",);
-            regs.port_register_set.update_volatile_at(i, |port| {
-                port.portsc.set_0_port_enabled_disabled();
-                port.portsc.set_port_reset();
-            });
-        }
-        for i in 0..port_len {
-            while regs
-                .port_register_set
-                .read_volatile_at(i)
-                .portsc
-                .port_reset()
-            {
-                spin_loop();
-            }
-        }
     }
 
     fn extended_capabilities(&self) -> Vec<ExtendedCapability<MemMapper>> {
@@ -425,8 +275,8 @@ impl Xhci {
             .addressing_capability()
     }
 
-    fn root(&mut self) -> Result<&mut Root> {
-        self.root.as_mut().ok_or(USBError::NotInitialized)
+    fn root(&self) -> Result<&RootHub> {
+        self.root.as_ref().ok_or(USBError::NotInitialized)
     }
 }
 

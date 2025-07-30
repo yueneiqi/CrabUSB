@@ -1,26 +1,11 @@
 use core::cell::UnsafeCell;
 
 use alloc::{sync::Arc, vec::Vec};
-use dma_api::{DBox, DSliceMut, DVec, Direction};
-use log::trace;
-use mbarrier::wmb;
-use xhci::{
-    context::{Device32Byte, Input32Byte},
-    registers::doorbell,
-    ring::trb::{
-        event::{CompletionCode, TransferEvent},
-        transfer::{self, TransferType},
-    },
-};
+use dma_api::{DBox, DVec};
+use xhci::context::{Device32Byte, Input32Byte};
 
-use super::{XhciRegisters, ring::Ring};
-use crate::{
-    Slot,
-    err::*,
-    standard::trans::{self, control::ControlTransfer},
-    wait::WaitMapWeak,
-    xhci::{SlotId, def::Dci},
-};
+use super::ring::Ring;
+use crate::{err::*, xhci::SlotId};
 
 pub struct DeviceContextList {
     pub dcbaa: DVec<u64>,
@@ -28,175 +13,15 @@ pub struct DeviceContextList {
     max_slots: usize,
 }
 
-struct ContextData {
-    out: DBox<Device32Byte>,
-    input: DBox<Input32Byte>,
-    transfer_rings: Vec<Ring>,
+pub struct ContextData {
+    pub out: DBox<Device32Byte>,
+    pub input: DBox<Input32Byte>,
+    pub transfer_rings: Vec<Ring>,
 }
 
 pub struct DeviceContext {
-    data: UnsafeCell<ContextData>,
+    pub data: UnsafeCell<ContextData>,
 }
-
-pub struct XhciSlot {
-    pub id: SlotId,
-    ctx: Arc<DeviceContext>,
-    reg: XhciRegisters,
-    wait: WaitMapWeak<TransferEvent>,
-}
-
-impl XhciSlot {
-    pub(crate) fn new(
-        slot_id: SlotId,
-        ctx: Arc<DeviceContext>,
-        reg: XhciRegisters,
-        wait: WaitMapWeak<TransferEvent>,
-    ) -> Self {
-        Self {
-            id: slot_id,
-            ctx,
-            reg,
-            wait,
-        }
-    }
-
-    pub fn ep_ring_ref(&self, dci: Dci) -> &Ring {
-        unsafe {
-            let data = &*self.ctx.data.get();
-            &data.transfer_rings[dci.as_usize() - 1]
-        }
-    }
-
-    pub fn ctrl_ring_mut(&mut self) -> &mut Ring {
-        unsafe {
-            let data = &mut *self.ctx.data.get();
-            &mut data.transfer_rings[0]
-        }
-    }
-
-    pub fn modify_input(&self, f: impl FnOnce(&mut Input32Byte)) {
-        unsafe {
-            let data = &mut *self.ctx.data.get();
-            data.input.modify(f);
-        }
-    }
-
-    pub fn set_input(&self, input: Input32Byte) {
-        unsafe {
-            let data = &mut *self.ctx.data.get();
-            data.input.write(input);
-        }
-    }
-
-    pub fn input_bus_addr(&self) -> u64 {
-        unsafe {
-            let data = &*self.ctx.data.get();
-            data.input.bus_addr()
-        }
-    }
-
-    pub async fn control_transfer(&mut self, urb: ControlTransfer) -> Result {
-        let mut trbs: Vec<transfer::Allowed> = Vec::new();
-        let mut setup = transfer::SetupStage::default();
-
-        setup
-            .set_request_type(urb.request_type.clone().into())
-            .set_request(urb.request.into())
-            .set_value(urb.value)
-            .set_index(urb.index)
-            .set_transfer_type(TransferType::No);
-
-        let mut data = None;
-
-        if let Some((addr, len)) = urb.data {
-            let data_slice =
-                unsafe { core::slice::from_raw_parts_mut(addr as *mut u8, len as usize) };
-
-            let dm = DSliceMut::from(data_slice, Direction::Bidirectional);
-
-            if matches!(urb.request_type.direction, trans::Direction::Out) {
-                dm.confirm_write_all();
-            }
-
-            setup
-                .set_transfer_type({
-                    match urb.request_type.direction {
-                        trans::Direction::Out => TransferType::Out,
-                        trans::Direction::In => TransferType::In,
-                    }
-                })
-                .set_length(len);
-
-            let mut raw_data = transfer::DataStage::default();
-            raw_data
-                .set_data_buffer_pointer(dm.bus_addr() as _)
-                .set_trb_transfer_length(len as _)
-                .set_direction(match urb.request_type.direction {
-                    trans::Direction::Out => transfer::Direction::Out,
-                    trans::Direction::In => transfer::Direction::In,
-                });
-
-            data = Some(raw_data)
-        }
-
-        let mut status = transfer::StatusStage::default();
-        status.set_interrupt_on_completion();
-
-        if matches!(urb.request_type.direction, trans::Direction::In) {
-            status.set_direction();
-        }
-
-        trbs.push(setup.into());
-        if let Some(data) = data {
-            trbs.push(data.into());
-        }
-        trbs.push(status.into());
-
-        let ring = self.ctrl_ring_mut();
-
-        let mut trb_ptr = 0;
-
-        for trb in trbs {
-            trb_ptr = ring.enque_transfer(trb);
-        }
-
-        trace!("trb : {trb_ptr:#x}");
-
-        wmb();
-
-        let mut bell = doorbell::Register::default();
-        bell.set_doorbell_target(1);
-
-        self.reg
-            .doorbell
-            .write_volatile_at(self.id.as_usize(), bell);
-
-        let ret = self.wait.try_wait_for_result(trb_ptr).unwrap().await;
-
-        match ret.completion_code() {
-            Ok(code) => {
-                if !matches!(code, CompletionCode::Success) {
-                    return Err(USBError::TransferEventError(code));
-                }
-            }
-            Err(_e) => return Err(USBError::Unknown),
-        }
-
-        if let Some((addr, len)) = urb.data {
-            let data_slice =
-                unsafe { core::slice::from_raw_parts_mut(addr as *mut u8, len as usize) };
-
-            let dm = DSliceMut::from(data_slice, Direction::Bidirectional);
-
-            if matches!(urb.request_type.direction, trans::Direction::In) {
-                dm.preper_read_all();
-            }
-        }
-        Ok(())
-    }
-}
-
-impl Slot for XhciSlot {}
 
 unsafe impl Send for DeviceContext {}
 unsafe impl Sync for DeviceContext {}
@@ -217,6 +42,13 @@ impl DeviceContext {
             }),
         })
     }
+
+    pub fn ctrl_ring(&self) -> &Ring {
+        unsafe {
+            let data = &*self.data.get();
+            &data.transfer_rings[0]
+        }
+    }
 }
 
 impl DeviceContextList {
@@ -231,11 +63,7 @@ impl DeviceContextList {
         })
     }
 
-    pub fn new_ctx(
-        &mut self,
-        slot_id: SlotId,
-        num_ep: usize, // cannot lesser than 0, and consider about alignment, use usize
-    ) -> Result<Arc<DeviceContext>> {
+    pub fn new_ctx(&mut self, slot_id: SlotId) -> Result<Arc<DeviceContext>> {
         if slot_id.as_usize() > self.max_slots {
             Err(USBError::SlotLimitReached)?;
         }
@@ -246,9 +74,8 @@ impl DeviceContextList {
 
         self.dcbaa.set(slot_id.as_usize(), ctx_mut.out.bus_addr());
 
-        ctx_mut.transfer_rings = (0..num_ep)
-            .map(|_| Ring::new(true, dma_api::Direction::Bidirectional))
-            .try_collect()?;
+        // With control transfer, we need at least one transfer ring
+        ctx_mut.transfer_rings = alloc::vec![Ring::new(true, dma_api::Direction::Bidirectional)?];
 
         self.ctx_list[slot_id.as_usize()] = Some(ctx.clone());
 

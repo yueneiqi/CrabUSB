@@ -36,12 +36,12 @@ mod tests {
             register_irq(irq_info, &mut host);
 
             host.init().await.unwrap();
-
-            debug!("usb cmd test");
+            info!("usb host init ok");
+            info!("usb cmd test");
 
             host.test_cmd().await.unwrap();
 
-            debug!("usb cmd ok");
+            info!("usb cmd ok");
 
             let ls = host.probe().await.unwrap();
 

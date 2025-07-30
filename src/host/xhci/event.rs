@@ -53,7 +53,7 @@ impl EventRing {
     }
 
     pub fn erdp(&self) -> u64 {
-        self.ring.current_trb_addr() & 0xFFFF_FFFF_FFFF_FFF0
+        self.ring.current_trb_addr().raw() & 0xFFFF_FFFF_FFFF_FFF0
     }
     pub fn erstba(&self) -> u64 {
         self.ste.bus_addr()

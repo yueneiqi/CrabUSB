@@ -1,6 +1,5 @@
 use alloc::sync::Arc;
-use dma_api::Impl;
-use mbarrier::{mb, wmb};
+use mbarrier::mb;
 use spin::Mutex;
 use xhci::{
     registers::doorbell,
@@ -42,7 +41,7 @@ unsafe impl Send for Inner {}
 impl CommandRing {
     pub fn new(reg: XhciRegisters) -> Result<Self> {
         let ring = Ring::new(true, dma_api::Direction::Bidirectional)?;
-        let wait = WaitMap::new(ring.trb_bus_addr_list());
+        let wait = WaitMap::new(ring.trb_bus_addr_list().map(|a| a.raw()));
 
         Ok(Self {
             inner: Arc::new(Mutex::new(Inner { reg, ring, wait })),
@@ -59,7 +58,7 @@ impl CommandRing {
             .doorbell
             .write_volatile_at(0, doorbell::Register::default());
 
-        let f = inner.wait.try_wait_for_result(trb_addr).unwrap();
+        let f = inner.wait.try_wait_for_result(trb_addr.raw()).unwrap();
         drop(g);
         f
     }
