@@ -1,78 +1,61 @@
 use core::{
-    cell::UnsafeCell,
     sync::atomic::{AtomicBool, Ordering},
     task::Poll,
 };
 
-use alloc::{
-    collections::btree_map::BTreeMap,
-    sync::{Arc, Weak},
-};
+use alloc::{collections::btree_map::BTreeMap, sync::Arc};
 use futures::task::AtomicWaker;
 
-pub struct WaitMap<T>(Arc<UnsafeCell<WaitMapRaw<T>>>);
+use crate::sync::RwLock;
+
+pub struct WaitMap<T>(Arc<RwLock<WaitMapRaw<T>>>);
 
 unsafe impl<T> Send for WaitMap<T> {}
 unsafe impl<T> Sync for WaitMap<T> {}
 
 impl<T> WaitMap<T> {
     pub fn new(id_list: impl Iterator<Item = u64>) -> Self {
-        Self(Arc::new(UnsafeCell::new(WaitMapRaw::new(id_list))))
+        Self(Arc::new(RwLock::new(WaitMapRaw::new(id_list))))
     }
 
     pub fn empty() -> Self {
-        Self(Arc::new(UnsafeCell::new(WaitMapRaw(BTreeMap::new()))))
+        Self(Arc::new(RwLock::new(WaitMapRaw(BTreeMap::new()))))
     }
 
     pub fn append(&self, id_ls: impl Iterator<Item = u64>) {
-        let raw = unsafe { &mut *self.0.get() };
+        let mut raw = self.0.write();
         for id in id_ls {
             raw.0.insert(id, Elem::new());
         }
     }
 
     pub unsafe fn set_result(&self, id: u64, result: T) {
-        unsafe { (&mut *self.0.get()).set_result(id, result) };
+        unsafe { self.0.force_use().set_result(id, result) };
     }
 
     pub fn try_wait_for_result(&self, id: u64) -> Option<Waiter<T>> {
-        unsafe {
-            (&mut *self.0.get()).try_lock(id)?;
+        let g = self.0.read();
+        let elem =
+            g.0.get(&id)
+                .expect("WaitMap: try_wait_for_result called with unknown id");
+        if elem
+            .using
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            return None;
         }
         Some(Waiter {
-            id,
-            wait: self.weak(),
+            elem: elem as *const Elem<T> as *mut Elem<T>,
         })
-    }
-
-    pub fn weak(&self) -> WaitMapWeak<T> {
-        WaitMapWeak(Arc::downgrade(&self.0))
     }
 }
 
-pub struct WaitMapWeak<T>(Weak<UnsafeCell<WaitMapRaw<T>>>);
-
-impl<T> Clone for WaitMapWeak<T> {
+impl<T> Clone for WaitMap<T> {
     fn clone(&self) -> Self {
-        Self(self.0.clone())
+        Self(Arc::clone(&self.0))
     }
 }
-
-impl<T> WaitMapWeak<T> {
-    pub fn try_wait_for_result(&self, id: u64) -> Option<Waiter<T>> {
-        let arc = self.0.upgrade()?;
-        unsafe {
-            (&mut *arc.get()).try_lock(id)?;
-        }
-        Some(Waiter {
-            id,
-            wait: self.clone(),
-        })
-    }
-}
-
-unsafe impl<T> Send for WaitMapWeak<T> {}
-unsafe impl<T> Sync for WaitMapWeak<T> {}
 
 pub struct WaitMapRaw<T>(BTreeMap<u64, Elem<T>>);
 
@@ -120,29 +103,14 @@ impl<T> WaitMapRaw<T> {
             wake.wake();
         }
     }
-
-    fn try_lock(&mut self, id: u64) -> Option<()> {
-        let elem = self
-            .0
-            .get_mut(&id)
-            .expect("WaitMap: wait_for_result called with unknown id");
-
-        if elem
-            .using
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_ok()
-        {
-            Some(())
-        } else {
-            None
-        }
-    }
 }
 
 pub struct Waiter<T> {
-    id: u64,
-    wait: WaitMapWeak<T>,
+    elem: *mut Elem<T>,
 }
+
+unsafe impl<T> Send for Waiter<T> {}
+unsafe impl<T> Sync for Waiter<T> {}
 
 impl<T> Future for Waiter<T> {
     type Output = T;
@@ -151,8 +119,7 @@ impl<T> Future for Waiter<T> {
         self: core::pin::Pin<&mut Self>,
         cx: &mut core::task::Context<'_>,
     ) -> core::task::Poll<Self::Output> {
-        let elem = self.wait.0.upgrade().unwrap();
-        let elem = unsafe { &mut *elem.get() }.0.get_mut(&self.id).unwrap();
+        let elem = unsafe { &mut *self.as_ref().elem };
 
         if elem.result_ok.load(Ordering::Acquire) {
             let result = elem

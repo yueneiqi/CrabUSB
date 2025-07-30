@@ -1,12 +1,13 @@
 use core::ptr::NonNull;
 
-use alloc::{boxed::Box, vec::Vec};
-use futures::{FutureExt, future::LocalBoxFuture};
+use alloc::vec::Vec;
 
 pub mod xhci;
 
 use crate::err::*;
 pub use xhci::Xhci;
+
+define_int_type!(PortId, usize);
 
 pub struct USBHost<C>
 where
@@ -41,7 +42,7 @@ impl USBHost<Xhci> {
         Ok(())
     }
 
-    pub async fn probe(&mut self) -> Result<Vec<Box<dyn Slot>>> {
+    pub async fn probe(&mut self) -> Result<Vec<xhci::Device>> {
         self.ctrl.probe().await
     }
 
@@ -56,15 +57,15 @@ impl USBHost<Xhci> {
 }
 
 pub trait Controller: Send {
-    fn init(&mut self) -> LocalBoxFuture<'_, Result>;
+    type Device: IDevice;
 
-    fn test_cmd(&mut self) -> LocalBoxFuture<'_, Result> {
-        async { Ok(()) }.boxed_local()
-    }
+    fn init(&mut self) -> impl Future<Output = Result> + Send;
 
-    fn probe(&mut self) -> LocalBoxFuture<'_, Result<Vec<Box<dyn Slot>>>>;
+    fn test_cmd(&mut self) -> impl Future<Output = Result> + Send;
+
+    fn probe(&mut self) -> impl Future<Output = Result<Vec<Self::Device>>> + Send;
 
     fn handle_irq(&mut self) {}
 }
 
-pub trait Slot: Send {}
+pub trait IDevice: Send {}

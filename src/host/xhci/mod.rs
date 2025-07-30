@@ -1,8 +1,7 @@
 use core::{num::NonZeroUsize, ptr::NonNull, time::Duration};
 
-use alloc::{boxed::Box, vec::Vec};
-use future::LocalBoxFuture;
-use futures::{prelude::*, task::AtomicWaker};
+use alloc::vec::Vec;
+use futures::task::AtomicWaker;
 use log::*;
 use xhci::{
     ExtendedCapability,
@@ -14,18 +13,20 @@ use xhci::{
 mod context;
 mod def;
 mod device;
+mod endpoint;
 mod event;
 mod reg;
 mod ring;
 mod root;
 
-use super::{Controller, Slot};
+use super::Controller;
 use crate::{
     err::*,
     sleep,
     xhci::{reg::XhciRegisters, root::RootHub},
 };
 use def::*;
+pub use device::Device;
 
 pub struct Xhci {
     reg: XhciRegisters,
@@ -36,36 +37,30 @@ pub struct Xhci {
 unsafe impl Send for Xhci {}
 
 impl Controller for Xhci {
-    fn init(&mut self) -> LocalBoxFuture<'_, Result> {
+    async fn init(&mut self) -> Result {
         // 4.2 Host Controller Initialization
-        async {
-            self.init_ext_caps().await?;
-            // After Chip Hardware Reset6 wait until the Controller Not Ready (CNR) flag
-            // in the USBSTS is ‘0’ before writing any xHC Operational or Runtime
-            // registers.
-            self.chip_hardware_reset().await?;
-            // Program the Max Device Slots Enabled (MaxSlotsEn) field in the CONFIG
-            // register (5.4.7) to enable the device slots that system software is going to
-            // use.
-            let max_slots = self.setup_max_device_slots();
-            let root_hub = RootHub::new(max_slots as _, self.reg.clone())?;
-            root_hub.init()?;
-            self.root = Some(root_hub);
-            trace!("Root hub initialized with max slots: {max_slots}");
-            self.root()?.wait_for_running().await;
-            self.root()?.lock().reset_ports();
-            Ok(())
-        }
-        .boxed_local()
+        self.init_ext_caps().await?;
+        // After Chip Hardware Reset6 wait until the Controller Not Ready (CNR) flag
+        // in the USBSTS is ‘0’ before writing any xHC Operational or Runtime
+        // registers.
+        self.chip_hardware_reset().await?;
+        // Program the Max Device Slots Enabled (MaxSlotsEn) field in the CONFIG
+        // register (5.4.7) to enable the device slots that system software is going to
+        // use.
+        let max_slots = self.setup_max_device_slots();
+        let root_hub = RootHub::new(max_slots as _, self.reg.clone())?;
+        root_hub.init()?;
+        self.root = Some(root_hub);
+        trace!("Root hub initialized with max slots: {max_slots}");
+        self.root()?.wait_for_running().await;
+        self.root()?.lock().reset_ports();
+        Ok(())
     }
 
-    fn test_cmd(&mut self) -> LocalBoxFuture<'_, Result> {
-        async {
-            self.post_cmd(command::Allowed::Noop(command::Noop::new()))
-                .await?;
-            Ok(())
-        }
-        .boxed_local()
+    async fn test_cmd(&mut self) -> Result {
+        self.post_cmd(command::Allowed::Noop(command::Noop::new()))
+            .await?;
+        Ok(())
     }
 
     fn handle_irq(&mut self) {
@@ -98,20 +93,18 @@ impl Controller for Xhci {
         }
     }
 
-    fn probe(&mut self) -> LocalBoxFuture<'_, Result<Vec<Box<dyn Slot>>>> {
-        async {
-            let mut slots = Vec::new();
-            let port_idx_list = self.port_idx_list();
+    async fn probe(&mut self) -> Result<Vec<Self::Device>> {
+        let mut slots = Vec::new();
+        let port_idx_list = self.port_idx_list();
 
-            for idx in port_idx_list {
-                let slot: Box<dyn Slot> = Box::new(self.root()?.new_device(idx).await?);
-                slots.push(slot);
-            }
-
-            Ok(slots)
+        for idx in port_idx_list {
+            let slot = self.root()?.new_device(idx).await?;
+            slots.push(slot);
         }
-        .boxed_local()
+        Ok(slots)
     }
+
+    type Device = device::Device;
 }
 
 impl Xhci {

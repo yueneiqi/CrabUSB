@@ -21,7 +21,7 @@ use crate::{
     PortId,
     err::USBError,
     sleep,
-    wait::{WaitMap, WaitMapWeak, Waiter},
+    wait::{WaitMap, Waiter},
     xhci::{
         XhciRegisters,
         context::{DeviceContextList, ScratchpadBufferArray},
@@ -199,12 +199,10 @@ impl Root {
     }
 
     fn start(&mut self) {
-        let regs = &mut self.reg;
-        debug!("Start run");
-
-        regs.operational.usbcmd.update_volatile(|r| {
+        self.reg.operational.usbcmd.update_volatile(|r| {
             r.set_run_stop();
         });
+        debug!("Start run");
     }
 
     pub fn handle_event(&mut self) {
@@ -306,7 +304,7 @@ impl Root {
 }
 
 #[derive(Clone)]
-pub struct RootHub {
+pub(crate) struct RootHub {
     inner: Arc<MutexRoot>,
 }
 
@@ -329,13 +327,12 @@ impl RootHub {
         }
     }
 
-    pub fn transfer_waiter(&self) -> WaitMapWeak<TransferEvent> {
-        self.lock().wait_transfer.weak()
+    pub fn transfer_waiter(&self) -> WaitMap<TransferEvent> {
+        self.lock().wait_transfer.clone()
     }
 
     pub fn init(&self) -> Result<(), USBError> {
-        let mut guard = self.try_lock().unwrap();
-        guard.init()
+        self.try_lock().unwrap().init()
     }
 
     #[allow(clippy::mut_from_ref)]
