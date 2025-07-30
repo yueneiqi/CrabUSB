@@ -1,5 +1,5 @@
 use alloc::{sync::Arc, vec::Vec};
-use dma_api::{DSliceMut, Direction};
+use dma_api::DSliceMut;
 use log::{debug, trace};
 use mbarrier::mb;
 use xhci::{
@@ -8,16 +8,16 @@ use xhci::{
     ring::trb::{
         command,
         event::{CompletionCode, TransferEvent},
-        transfer::{self, TransferType},
+        transfer,
     },
 };
 
 use crate::{
     BusAddr, IDevice, PortId,
     err::USBError,
-    standard::trans::{
-        self,
-        control::{ControlTransfer, ControlTransferRaw, Recipient, Request, RequestType},
+    standard::transfer::{
+        Direction,
+        control::{Control, ControlRaw, Recipient, Request, RequestType, TransferType},
     },
     wait::WaitMap,
     xhci::{
@@ -56,7 +56,7 @@ impl Device {
         }
     }
 
-    pub async fn init(&mut self) -> Result<(), USBError> {
+    pub(crate) async fn init(&mut self) -> Result<(), USBError> {
         trace!("Initializing device with ID: {}", self.id.as_u8());
         // Perform initialization logic here
         self.address().await?;
@@ -133,14 +133,10 @@ impl Device {
         Ok(())
     }
 
-    pub async fn control_transfer_in(
-        &mut self,
-        param: ControlTransfer,
-        buff: &mut [u8],
-    ) -> Result<(), USBError> {
-        self.control_transfer(ControlTransferRaw {
+    pub async fn control_in(&mut self, param: Control, buff: &mut [u8]) -> Result<(), USBError> {
+        self.control_transfer(ControlRaw {
             request_type: RequestType {
-                direction: trans::Direction::In,
+                direction: Direction::In,
                 transfer_type: param.transfer_type,
                 recipient: param.recipient,
             },
@@ -156,14 +152,10 @@ impl Device {
         .await
     }
 
-    pub async fn control_transfer_out(
-        &mut self,
-        param: ControlTransfer,
-        buff: &[u8],
-    ) -> Result<(), USBError> {
-        self.control_transfer(ControlTransferRaw {
+    pub async fn control_out(&mut self, param: Control, buff: &[u8]) -> Result<(), USBError> {
+        self.control_transfer(ControlRaw {
             request_type: RequestType {
-                direction: trans::Direction::Out,
+                direction: Direction::Out,
                 transfer_type: param.transfer_type,
                 recipient: param.recipient,
             },
@@ -179,7 +171,7 @@ impl Device {
         .await
     }
 
-    async fn control_transfer(&mut self, urb: ControlTransferRaw) -> Result<(), USBError> {
+    async fn control_transfer(&mut self, urb: ControlRaw) -> Result<(), USBError> {
         let mut trbs: Vec<transfer::Allowed> = Vec::new();
         let mut setup = transfer::SetupStage::default();
 
@@ -188,7 +180,7 @@ impl Device {
             .set_request(urb.request.into())
             .set_value(urb.value)
             .set_index(urb.index)
-            .set_transfer_type(TransferType::No);
+            .set_transfer_type(transfer::TransferType::No);
 
         let mut data = None;
 
@@ -196,29 +188,21 @@ impl Device {
             let data_slice =
                 unsafe { core::slice::from_raw_parts_mut(addr as *mut u8, len as usize) };
 
-            let dm = DSliceMut::from(data_slice, Direction::Bidirectional);
+            let dm = DSliceMut::from(data_slice, dma_api::Direction::Bidirectional);
 
-            if matches!(urb.request_type.direction, trans::Direction::Out) {
+            if matches!(urb.request_type.direction, Direction::Out) {
                 dm.confirm_write_all();
             }
 
             setup
-                .set_transfer_type({
-                    match urb.request_type.direction {
-                        trans::Direction::Out => TransferType::Out,
-                        trans::Direction::In => TransferType::In,
-                    }
-                })
+                .set_transfer_type(urb.request_type.direction.into())
                 .set_length(len);
 
             let mut raw_data = transfer::DataStage::default();
             raw_data
                 .set_data_buffer_pointer(dm.bus_addr() as _)
                 .set_trb_transfer_length(len as _)
-                .set_direction(match urb.request_type.direction {
-                    trans::Direction::Out => transfer::Direction::Out,
-                    trans::Direction::In => transfer::Direction::In,
-                });
+                .set_direction(urb.request_type.direction.into());
 
             data = Some(raw_data)
         }
@@ -226,7 +210,7 @@ impl Device {
         let mut status = transfer::StatusStage::default();
         status.set_interrupt_on_completion();
 
-        if matches!(urb.request_type.direction, trans::Direction::In) {
+        if matches!(urb.request_type.direction, Direction::In) {
             status.set_direction();
         }
 
@@ -268,16 +252,16 @@ impl Device {
             let data_slice =
                 unsafe { core::slice::from_raw_parts_mut(addr as *mut u8, len as usize) };
 
-            let dm = DSliceMut::from(data_slice, Direction::Bidirectional);
+            let dm = DSliceMut::from(data_slice, dma_api::Direction::Bidirectional);
 
-            if matches!(urb.request_type.direction, trans::Direction::In) {
+            if matches!(urb.request_type.direction, Direction::In) {
                 dm.preper_read_all();
             }
         }
         Ok(())
     }
 
-    pub fn ctrl_ring_mut(&mut self) -> &mut Ring {
+    pub(crate) fn ctrl_ring_mut(&mut self) -> &mut Ring {
         unsafe {
             let data = &mut *self.ctx.data.get();
             &mut data.transfer_rings[0]
@@ -307,12 +291,12 @@ impl Device {
 
         let mut data = [0u8; 8];
 
-        self.control_transfer_in(
-            ControlTransfer {
+        self.control_in(
+            Control {
                 request: Request::GetDescriptor,
                 index: 0,
                 value: 1 << 8,
-                transfer_type: trans::control::TransferType::Standard,
+                transfer_type: TransferType::Standard,
                 recipient: Recipient::Device,
             },
             &mut data,
