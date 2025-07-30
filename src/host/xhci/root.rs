@@ -117,6 +117,12 @@ impl Root {
             r.clear_interrupter_enable();
         });
     }
+    pub fn enable_irq(&mut self) {
+        debug!("Enable interrupts");
+        self.reg.operational.usbcmd.update_volatile(|r| {
+            r.set_interrupter_enable();
+        });
+    }
 
     fn init_irq(&mut self) -> Result<(), USBError> {
         let erstz = self.event_ring.len();
@@ -161,7 +167,6 @@ impl Root {
 
         /* Set the HCD state before we enable the irqs */
         self.reg.operational.usbcmd.update_volatile(|r| {
-            r.set_interrupter_enable();
             r.set_host_system_error_enable();
             r.set_enable_wrap_event();
         });

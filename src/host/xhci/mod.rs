@@ -52,6 +52,7 @@ impl Controller for Xhci {
         root_hub.init()?;
         self.root = Some(root_hub);
         trace!("Root hub initialized with max slots: {max_slots}");
+        self.root()?.lock().enable_irq();
         self.root()?.wait_for_running().await;
         self.root()?.lock().reset_ports();
         Ok(())
