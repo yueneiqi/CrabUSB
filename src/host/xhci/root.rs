@@ -1,6 +1,12 @@
+use core::{
+    cell::UnsafeCell,
+    ops::{Deref, DerefMut},
+    sync::atomic::{AtomicBool, Ordering},
+};
+
 use alloc::{boxed::Box, sync::Arc};
 use log::{debug, trace};
-use mbarrier::wmb;
+use mbarrier::{mb, wmb};
 use xhci::{
     context::{Input32Byte, InputHandler},
     registers::doorbell,
@@ -24,6 +30,7 @@ use crate::{
         def::{Dci, SlotId},
         event::EventRing,
         parse_default_max_packet_size_from_port_speed,
+        reg::DisableIrqGuard,
         ring::{Ring, TrbData},
     },
 };
@@ -270,7 +277,7 @@ impl Root {
 
         slot.set_input(input);
 
-        wmb();
+        mb();
 
         let result = self
             .post_cmd(command::Allowed::AddressDevice(
@@ -296,7 +303,7 @@ impl Root {
             endpoint.set_max_packet_size(max_packet_size);
         });
 
-        wmb();
+        mb();
 
         let result = self
             .post_cmd(command::Allowed::EvaluateContext(
@@ -309,5 +316,56 @@ impl Root {
         debug!("Set packet size ok {result:?}");
 
         Ok(())
+    }
+}
+
+pub struct RootHub {
+    inner: Arc<MutexRoot>,
+}
+
+pub struct MutexRoot {
+    inner: UnsafeCell<Root>,
+    lock: AtomicBool,
+}
+
+impl MutexRoot {
+    pub fn new(inner: Root) -> Self {
+        Self {
+            inner: UnsafeCell::new(inner),
+            lock: AtomicBool::new(false),
+        }
+    }
+
+    pub fn try_lock(&self) -> Option<MutexGuard<'_>> {
+        if self
+            .lock
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok()
+        {
+            let inner = unsafe { &mut *self.inner.get() };
+            let irq_guard = inner.reg.disable_irq_guard();
+            Some(MutexGuard { inner, irq_guard })
+        } else {
+            None
+        }
+    }
+}
+
+pub struct MutexGuard<'a> {
+    inner: &'a mut Root,
+    irq_guard: DisableIrqGuard,
+}
+
+impl Deref for MutexGuard<'_> {
+    type Target = Root;
+
+    fn deref(&self) -> &Self::Target {
+        self.inner
+    }
+}
+
+impl DerefMut for MutexGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.inner
     }
 }
