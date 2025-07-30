@@ -55,8 +55,8 @@ mod tests {
     struct KernelImpl;
 
     impl Kernel for KernelImpl {
-        fn sleep<'a>(duration: Duration) -> futures::future::LocalBoxFuture<'a, ()> {
-            time::sleep(duration).boxed_local()
+        fn sleep<'a>(duration: Duration) -> futures::future::BoxFuture<'a, ()> {
+            time::sleep(duration).boxed()
         }
 
         fn page_size() -> usize {

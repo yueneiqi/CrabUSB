@@ -304,7 +304,7 @@ impl Root {
 }
 
 #[derive(Clone)]
-pub struct RootHub {
+pub(crate) struct RootHub {
     inner: Arc<MutexRoot>,
 }
 

@@ -14,17 +14,17 @@ pub mod standard;
 mod sync;
 pub(crate) mod wait;
 
-pub use futures::future::LocalBoxFuture;
+pub use futures::future::BoxFuture;
 pub use host::*;
 
 pub trait Kernel {
-    fn sleep<'a>(duration: Duration) -> LocalBoxFuture<'a, ()>;
+    fn sleep<'a>(duration: Duration) -> BoxFuture<'a, ()>;
     fn page_size() -> usize;
 }
 
 pub(crate) async fn sleep(duration: Duration) {
     unsafe extern "Rust" {
-        fn _usb_host_sleep<'a>(duration: Duration) -> LocalBoxFuture<'a, ()>;
+        fn _usb_host_sleep<'a>(duration: Duration) -> BoxFuture<'a, ()>;
     }
 
     unsafe {
@@ -48,7 +48,7 @@ macro_rules! set_impl {
         #[unsafe(no_mangle)]
         unsafe fn _usb_host_sleep<'a>(
             duration: core::time::Duration,
-        ) -> $crate::LocalBoxFuture<'a, ()> {
+        ) -> $crate::BoxFuture<'a, ()> {
             <$t as $crate::Kernel>::sleep(duration)
         }
 

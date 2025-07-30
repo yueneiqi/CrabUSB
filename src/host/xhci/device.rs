@@ -13,7 +13,7 @@ use xhci::{
 };
 
 use crate::{
-    BusAddr, PortId, Slot,
+    BusAddr, IDevice, PortId,
     err::USBError,
     standard::trans::{
         self,
@@ -38,10 +38,15 @@ pub struct Device {
     port_id: PortId,
 }
 
-impl Slot for Device {}
+impl IDevice for Device {}
 
 impl Device {
-    pub fn new(id: SlotId, root: &RootHub, ctx: Arc<DeviceContext>, port_id: PortId) -> Self {
+    pub(crate) fn new(
+        id: SlotId,
+        root: &RootHub,
+        ctx: Arc<DeviceContext>,
+        port_id: PortId,
+    ) -> Self {
         Self {
             id,
             root: root.clone(),
