@@ -1,4 +1,4 @@
-use alloc::{string::String, sync::Arc, vec::Vec};
+use alloc::{sync::Arc, vec::Vec};
 use dma_api::DSliceMut;
 use log::{debug, trace};
 use mbarrier::mb;
@@ -17,8 +17,8 @@ use crate::{
     err::USBError,
     standard::{
         descriptors::{
-            DESCRIPTOR_LEN_DEVICE, DESCRIPTOR_TYPE_DEVICE, DESCRIPTOR_TYPE_STRING,
-            DeviceDescriptor, decode_string_descriptor, language_id::US_ENGLISH,
+            DESCRIPTOR_LEN_DEVICE, DESCRIPTOR_TYPE_DEVICE, DeviceDescriptor,
+            language_id::US_ENGLISH,
         },
         transfer::{
             Direction,
@@ -122,7 +122,6 @@ impl Device {
         endpoint_0.set_interval(0);
         endpoint_0.set_max_primary_streams(0);
         endpoint_0.set_mult(0);
-        endpoint_0.set_error_count(3);
 
         self.set_input(input);
 
