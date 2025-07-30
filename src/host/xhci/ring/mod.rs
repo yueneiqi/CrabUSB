@@ -5,10 +5,6 @@ use xhci::ring::trb::{Link, command, transfer};
 
 use crate::{BusAddr, err::*, page_size};
 
-mod cmd;
-mod trans;
-pub use trans::*;
-
 const TRB_LEN: usize = 4;
 const TRB_SIZE: usize = size_of::<TrbData>();
 
