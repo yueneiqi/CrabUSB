@@ -19,18 +19,19 @@ use xhci::{
 };
 
 use crate::{
-    BusAddr, Slot,
+    PortId, Slot,
     err::USBError,
     sleep,
     standard::trans::{
         Direction,
         control::{ControlTransfer, Recipient, Request, RequestType, TransferType},
     },
-    wait::{WaitMap, Waiter},
+    wait::{WaitMap, WaitMapWeak, Waiter},
     xhci::{
         XhciRegisters, append_port_to_route_string,
         context::{DeviceContext, DeviceContextList, ScratchpadBufferArray, XhciSlot},
         def::{Dci, SlotId},
+        device::Device,
         event::EventRing,
         parse_default_max_packet_size_from_port_speed,
         reg::DisableIrqGuard,
@@ -311,10 +312,10 @@ impl Root {
         Ok(slot)
     }
 
-    fn port_speed(&self, port: usize) -> u8 {
+    pub fn port_speed(&self, port: PortId) -> u8 {
         self.reg
             .port_register_set
-            .read_volatile_at(port)
+            .read_volatile_at(port.raw() as usize - 1)
             .portsc
             .port_speed()
     }
@@ -342,6 +343,10 @@ impl RootHub {
                 return g;
             }
         }
+    }
+
+    pub fn transfer_waiter(&self) -> WaitMapWeak<TransferEvent> {
+        self.lock().wait_transfer.weak()
     }
 
     pub fn init(&self) -> Result<(), USBError> {
@@ -384,6 +389,15 @@ impl RootHub {
         }
     }
 
+    pub fn doorbell(&self, slot_id: SlotId, bell: doorbell::Register) {
+        unsafe {
+            self.force_use()
+                .reg
+                .doorbell
+                .write_volatile_at(slot_id.as_usize(), bell);
+        }
+    }
+
     async fn device_slot_assignment(&self) -> Result<SlotId, USBError> {
         // enable slot
         let result = self
@@ -395,138 +409,153 @@ impl RootHub {
         Ok(slot_id.into())
     }
 
-    pub async fn new_slot(&self, port_idx: usize) -> Result<Box<dyn Slot>, USBError> {
+    pub async fn new_device(&self, port_idx: usize) -> Result<Device, USBError> {
+        debug!("New device on port {port_idx}");
         let slot_id = self.device_slot_assignment().await?;
         debug!("Slot {slot_id} assigned");
-
-        let ctx = self.lock().dev_list.new_ctx(slot_id, 32)?;
-
-        let mut slot = self.lock().new_slot_data(slot_id, ctx)?;
-
-        self.address(&mut slot, port_idx).await?;
-
-        debug!("Slot {slot_id} address complete");
-        trace!("control_fetch_control_point_packet_size");
-
-        let data = [0u8; 8];
-
-        slot.control_transfer(ControlTransfer {
-            request_type: RequestType::new(
-                Direction::In,
-                TransferType::Standard,
-                Recipient::Device,
-            ),
-            request: Request::GetDescriptor,
-            index: 0,
-            value: 1 << 8,
-            data: Some((data.as_ptr() as usize, data.len() as _)),
-        })
-        .await?;
-
-        let packet_size = data
-            .last()
-            .map(|&len| if len == 0 { 8u8 } else { len })
-            .unwrap();
-        trace!("packet_size: {packet_size:?}");
-
-        self.set_slot_ep_packet_size(&mut slot, 1.into(), packet_size as _)
-            .await?;
-
-        Ok(Box::new(slot))
+        let ctx = {
+            let mut root = self.lock();
+            let ctx = root.dev_list.new_ctx(slot_id)?;
+            root.litsen_transfer(ctx.ctrl_ring());
+            ctx
+        };
+        let mut device = Device::new(slot_id, self, ctx, (port_idx + 1).into());
+        device.init().await?;
+        Ok(device)
     }
 
-    async fn address(&self, slot: &mut XhciSlot, port_idx: usize) -> Result<(), USBError> {
-        let port_speed = self.lock().port_speed(port_idx);
-        let max_packet_size = parse_default_max_packet_size_from_port_speed(port_speed);
+    // pub async fn new_slot(&self, port_idx: usize) -> Result<Box<dyn Slot>, USBError> {
+    //     let slot_id = self.device_slot_assignment().await?;
+    //     debug!("Slot {slot_id} assigned");
 
-        let port_id = port_idx + 1;
-        let dci = 1.into();
+    //     let ctx = self.lock().dev_list.new_ctx(slot_id, 32)?;
 
-        let transfer_ring_0_addr = slot.ep_ring_ref(dci).bus_addr();
+    //     let mut slot = self.lock().new_slot_data(slot_id, ctx)?;
 
-        trace!("ring0: {transfer_ring_0_addr:#x}");
+    //     self.address(&mut slot, port_idx).await?;
 
-        let ring_cycle_bit = slot.ep_ring_ref(dci).cycle;
+    //     debug!("Slot {slot_id} address complete");
+    //     trace!("control_fetch_control_point_packet_size");
 
-        let mut input = Input32Byte::default();
-        let control_context = input.control_mut();
-        control_context.set_add_context_flag(0);
-        control_context.set_add_context_flag(1);
-        for i in 2..32 {
-            control_context.clear_drop_context_flag(i);
-        }
+    //     let data = [0u8; 8];
 
-        let slot_context = input.device_mut().slot_mut();
-        slot_context.clear_multi_tt();
-        slot_context.clear_hub();
-        slot_context.set_route_string(append_port_to_route_string(0, 0)); // for now, not support more hub ,so hardcode as 0.//TODO: generate route string
-        slot_context.set_context_entries(1);
-        slot_context.set_max_exit_latency(0);
-        slot_context.set_root_hub_port_number(port_id as _); //todo: to use port number
-        slot_context.set_number_of_ports(0);
-        slot_context.set_parent_hub_slot_id(0);
-        slot_context.set_tt_think_time(0);
-        slot_context.set_interrupter_target(0);
-        slot_context.set_speed(port_speed);
+    //     slot.control_transfer(ControlTransfer {
+    //         request_type: RequestType::new(
+    //             Direction::In,
+    //             TransferType::Standard,
+    //             Recipient::Device,
+    //         ),
+    //         request: Request::GetDescriptor,
+    //         index: 0,
+    //         value: 1 << 8,
+    //         data: Some((data.as_ptr() as usize, data.len() as _)),
+    //     })
+    //     .await?;
 
-        let endpoint_0 = input.device_mut().endpoint_mut(dci.as_usize());
-        endpoint_0.set_endpoint_type(xhci::context::EndpointType::Control);
-        endpoint_0.set_max_packet_size(max_packet_size);
-        endpoint_0.set_max_burst_size(0);
-        endpoint_0.set_error_count(3);
-        endpoint_0.set_tr_dequeue_pointer(transfer_ring_0_addr);
-        if ring_cycle_bit {
-            endpoint_0.set_dequeue_cycle_state();
-        } else {
-            endpoint_0.clear_dequeue_cycle_state();
-        }
-        endpoint_0.set_interval(0);
-        endpoint_0.set_max_primary_streams(0);
-        endpoint_0.set_mult(0);
-        endpoint_0.set_error_count(3);
+    //     let packet_size = data
+    //         .last()
+    //         .map(|&len| if len == 0 { 8u8 } else { len })
+    //         .unwrap();
+    //     trace!("packet_size: {packet_size:?}");
 
-        slot.set_input(input);
+    //     self.set_slot_ep_packet_size(&mut slot, 1.into(), packet_size as _)
+    //         .await?;
 
-        mb();
+    //     Ok(Box::new(slot))
+    // }
 
-        let result = self
-            .post_cmd(command::Allowed::AddressDevice(
-                *command::AddressDevice::new()
-                    .set_slot_id(slot.id.into())
-                    .set_input_context_pointer(slot.input_bus_addr()),
-            ))
-            .await?;
+    // async fn address(&self, slot: &mut XhciSlot, port_idx: usize) -> Result<(), USBError> {
+    //     let port_speed = self.lock().port_speed(port_idx);
+    //     let max_packet_size = parse_default_max_packet_size_from_port_speed(port_speed);
 
-        debug!("Address slot ok {result:?}");
+    //     let port_id = port_idx + 1;
+    //     let dci = 1.into();
 
-        Ok(())
-    }
+    //     let transfer_ring_0_addr = slot.ep_ring_ref(dci).bus_addr();
 
-    async fn set_slot_ep_packet_size(
-        &self,
-        slot: &mut XhciSlot,
-        dci: Dci,
-        max_packet_size: u16,
-    ) -> Result<(), USBError> {
-        slot.modify_input(|input| {
-            let endpoint = input.device_mut().endpoint_mut(dci.as_usize());
-            endpoint.set_max_packet_size(max_packet_size);
-        });
+    //     trace!("ring0: {transfer_ring_0_addr:#x}");
 
-        mb();
+    //     let ring_cycle_bit = slot.ep_ring_ref(dci).cycle;
 
-        let result = self
-            .post_cmd(command::Allowed::EvaluateContext(
-                *command::EvaluateContext::default()
-                    .set_slot_id(slot.id.into())
-                    .set_input_context_pointer(slot.input_bus_addr()),
-            ))
-            .await?;
+    //     let mut input = Input32Byte::default();
+    //     let control_context = input.control_mut();
+    //     control_context.set_add_context_flag(0);
+    //     control_context.set_add_context_flag(1);
+    //     for i in 2..32 {
+    //         control_context.clear_drop_context_flag(i);
+    //     }
 
-        debug!("Set packet size ok {result:?}");
+    //     let slot_context = input.device_mut().slot_mut();
+    //     slot_context.clear_multi_tt();
+    //     slot_context.clear_hub();
+    //     slot_context.set_route_string(append_port_to_route_string(0, 0)); // for now, not support more hub ,so hardcode as 0.//TODO: generate route string
+    //     slot_context.set_context_entries(1);
+    //     slot_context.set_max_exit_latency(0);
+    //     slot_context.set_root_hub_port_number(port_id as _); //todo: to use port number
+    //     slot_context.set_number_of_ports(0);
+    //     slot_context.set_parent_hub_slot_id(0);
+    //     slot_context.set_tt_think_time(0);
+    //     slot_context.set_interrupter_target(0);
+    //     slot_context.set_speed(port_speed);
 
-        Ok(())
-    }
+    //     let endpoint_0 = input.device_mut().endpoint_mut(dci.as_usize());
+    //     endpoint_0.set_endpoint_type(xhci::context::EndpointType::Control);
+    //     endpoint_0.set_max_packet_size(max_packet_size);
+    //     endpoint_0.set_max_burst_size(0);
+    //     endpoint_0.set_error_count(3);
+    //     endpoint_0.set_tr_dequeue_pointer(transfer_ring_0_addr);
+    //     if ring_cycle_bit {
+    //         endpoint_0.set_dequeue_cycle_state();
+    //     } else {
+    //         endpoint_0.clear_dequeue_cycle_state();
+    //     }
+    //     endpoint_0.set_interval(0);
+    //     endpoint_0.set_max_primary_streams(0);
+    //     endpoint_0.set_mult(0);
+    //     endpoint_0.set_error_count(3);
+
+    //     slot.set_input(input);
+
+    //     mb();
+
+    //     let result = self
+    //         .post_cmd(command::Allowed::AddressDevice(
+    //             *command::AddressDevice::new()
+    //                 .set_slot_id(slot.id.into())
+    //                 .set_input_context_pointer(slot.input_bus_addr()),
+    //         ))
+    //         .await?;
+
+    //     debug!("Address slot ok {result:?}");
+
+    //     Ok(())
+    // }
+
+    // async fn set_slot_ep_packet_size(
+    //     &self,
+    //     slot: &mut XhciSlot,
+    //     dci: Dci,
+    //     max_packet_size: u16,
+    // ) -> Result<(), USBError> {
+    //     slot.modify_input(|input| {
+    //         let endpoint = input.device_mut().endpoint_mut(dci.as_usize());
+    //         endpoint.set_max_packet_size(max_packet_size);
+    //     });
+
+    //     mb();
+
+    //     let result = self
+    //         .post_cmd(command::Allowed::EvaluateContext(
+    //             *command::EvaluateContext::default()
+    //                 .set_slot_id(slot.id.into())
+    //                 .set_input_context_pointer(slot.input_bus_addr()),
+    //         ))
+    //         .await?;
+
+    //     debug!("Set packet size ok {result:?}");
+
+    //     Ok(())
+    // }
 }
 
 pub struct MutexRoot {

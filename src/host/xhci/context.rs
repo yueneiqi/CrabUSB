@@ -28,14 +28,14 @@ pub struct DeviceContextList {
     max_slots: usize,
 }
 
-struct ContextData {
-    out: DBox<Device32Byte>,
-    input: DBox<Input32Byte>,
-    transfer_rings: Vec<Ring>,
+pub struct ContextData {
+    pub out: DBox<Device32Byte>,
+    pub input: DBox<Input32Byte>,
+    pub transfer_rings: Vec<Ring>,
 }
 
 pub struct DeviceContext {
-    data: UnsafeCell<ContextData>,
+    pub data: UnsafeCell<ContextData>,
 }
 
 pub struct XhciSlot {
@@ -217,6 +217,13 @@ impl DeviceContext {
             }),
         })
     }
+
+    pub fn ctrl_ring(&self) -> &Ring {
+        unsafe {
+            let data = &*self.data.get();
+            &data.transfer_rings[0]
+        }
+    }
 }
 
 impl DeviceContextList {
@@ -231,11 +238,7 @@ impl DeviceContextList {
         })
     }
 
-    pub fn new_ctx(
-        &mut self,
-        slot_id: SlotId,
-        num_ep: usize, // cannot lesser than 0, and consider about alignment, use usize
-    ) -> Result<Arc<DeviceContext>> {
+    pub fn new_ctx(&mut self, slot_id: SlotId) -> Result<Arc<DeviceContext>> {
         if slot_id.as_usize() > self.max_slots {
             Err(USBError::SlotLimitReached)?;
         }
@@ -246,9 +249,8 @@ impl DeviceContextList {
 
         self.dcbaa.set(slot_id.as_usize(), ctx_mut.out.bus_addr());
 
-        ctx_mut.transfer_rings = (0..num_ep)
-            .map(|_| Ring::new(true, dma_api::Direction::Bidirectional))
-            .try_collect()?;
+        // With control transfer, we need at least one transfer ring
+        ctx_mut.transfer_rings = alloc::vec![Ring::new(true, dma_api::Direction::Bidirectional)?];
 
         self.ctx_list[slot_id.as_usize()] = Some(ctx.clone());
 

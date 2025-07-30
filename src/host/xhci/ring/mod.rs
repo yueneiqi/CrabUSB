@@ -66,8 +66,8 @@ impl Ring {
         self.trbs.get(self.i)
     }
 
-    pub fn bus_addr(&self) -> u64 {
-        self.trbs.bus_addr()
+    pub fn bus_addr(&self) -> BusAddr {
+        self.trbs.bus_addr().into()
     }
 
     pub fn enque_command(&mut self, mut trb: command::Allowed) -> BusAddr {
@@ -143,7 +143,7 @@ impl Ring {
     }
 
     pub fn trb_bus_addr(&self, i: usize) -> BusAddr {
-        let base = self.bus_addr();
+        let base = self.bus_addr().raw();
         (base + (i * size_of::<TrbData>()) as u64).into()
     }
 

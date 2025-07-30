@@ -1,7 +1,6 @@
-use core::{hint::spin_loop, num::NonZeroUsize, ptr::NonNull, time::Duration};
+use core::{num::NonZeroUsize, ptr::NonNull, time::Duration};
 
 use alloc::{boxed::Box, vec::Vec};
-use context::ScratchpadBufferArray;
 use future::LocalBoxFuture;
 use futures::{prelude::*, task::AtomicWaker};
 use log::*;
@@ -9,12 +8,12 @@ use xhci::{
     ExtendedCapability,
     accessor::Mapper,
     extended_capabilities::{self, usb_legacy_support_capability::UsbLegacySupport},
-    registers::doorbell,
     ring::trb::{command, event::CommandCompletion},
 };
 
 mod context;
 mod def;
+mod device;
 mod event;
 mod reg;
 mod ring;
@@ -24,10 +23,7 @@ use super::{Controller, Slot};
 use crate::{
     err::*,
     sleep,
-    xhci::{
-        reg::XhciRegisters,
-        root::{Root, RootHub},
-    },
+    xhci::{reg::XhciRegisters, root::RootHub},
 };
 use def::*;
 
@@ -108,7 +104,7 @@ impl Controller for Xhci {
             let port_idx_list = self.port_idx_list();
 
             for idx in port_idx_list {
-                let slot = self.root()?.new_slot(idx).await?;
+                let slot: Box<dyn Slot> = Box::new(self.root()?.new_device(idx).await?);
                 slots.push(slot);
             }
 
