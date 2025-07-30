@@ -1,4 +1,4 @@
-use alloc::{sync::Arc, vec::Vec};
+use alloc::{string::String, sync::Arc, vec::Vec};
 use dma_api::DSliceMut;
 use log::{debug, trace};
 use mbarrier::mb;
@@ -15,9 +15,15 @@ use xhci::{
 use crate::{
     BusAddr, IDevice, PortId,
     err::USBError,
-    standard::transfer::{
-        Direction,
-        control::{Control, ControlRaw, Recipient, Request, RequestType, TransferType},
+    standard::{
+        descriptors::{
+            DESCRIPTOR_LEN_DEVICE, DESCRIPTOR_TYPE_DEVICE, DESCRIPTOR_TYPE_STRING,
+            DeviceDescriptor, decode_string_descriptor, language_id::US_ENGLISH,
+        },
+        transfer::{
+            Direction,
+            control::{Control, ControlRaw, ControlType, Recipient, Request, RequestType},
+        },
     },
     wait::WaitMap,
     xhci::{
@@ -36,6 +42,7 @@ pub struct Device {
     ctx: Arc<DeviceContext>,
     wait: WaitMap<TransferEvent>,
     port_id: PortId,
+    desc: Option<DeviceDescriptor>,
 }
 
 impl IDevice for Device {}
@@ -53,6 +60,7 @@ impl Device {
             ctx,
             wait: root.transfer_waiter(),
             port_id,
+            desc: None,
         }
     }
 
@@ -61,6 +69,7 @@ impl Device {
         // Perform initialization logic here
         self.address().await?;
         let max_packet_size = self.query_packet_size().await?;
+
         trace!("Max packet size: {max_packet_size}");
         self.set_ep_packet_size(Dci::CTRL, max_packet_size).await?;
         Ok(())
@@ -137,7 +146,7 @@ impl Device {
         self.control_transfer(ControlRaw {
             request_type: RequestType {
                 direction: Direction::In,
-                transfer_type: param.transfer_type,
+                control_type: param.transfer_type,
                 recipient: param.recipient,
             },
             request: param.request,
@@ -156,7 +165,7 @@ impl Device {
         self.control_transfer(ControlRaw {
             request_type: RequestType {
                 direction: Direction::Out,
-                transfer_type: param.transfer_type,
+                control_type: param.transfer_type,
                 recipient: param.recipient,
             },
             request: param.request,
@@ -296,7 +305,7 @@ impl Device {
                 request: Request::GetDescriptor,
                 index: 0,
                 value: 1 << 8,
-                transfer_type: TransferType::Standard,
+                transfer_type: ControlType::Standard,
                 recipient: Recipient::Device,
             },
             &mut data,
@@ -340,4 +349,48 @@ impl Device {
             data.input.modify(f);
         }
     }
+
+    pub async fn descriptor(&mut self) -> Result<DeviceDescriptor, USBError> {
+        if let Some(desc) = &self.desc {
+            return Ok(desc.clone());
+        }
+        let mut buff = alloc::vec![0u8; DESCRIPTOR_LEN_DEVICE as usize];
+        self.get_descriptor(DESCRIPTOR_TYPE_DEVICE, 0, US_ENGLISH, &mut buff)
+            .await?;
+        let desc = DeviceDescriptor::new(&buff).ok_or(USBError::Unknown)?;
+        self.desc = Some(desc.clone());
+        Ok(desc)
+    }
+
+    async fn get_descriptor(
+        &mut self,
+        desc_type: u8,
+        desc_index: u8,
+        language_id: u16,
+        buff: &mut [u8],
+    ) -> Result<(), USBError> {
+        self.control_in(
+            Control {
+                request: Request::GetDescriptor,
+                index: language_id,
+                value: ((desc_type as u16) << 8) | desc_index as u16,
+                transfer_type: ControlType::Standard,
+                recipient: Recipient::Device,
+            },
+            buff,
+        )
+        .await?;
+        Ok(())
+    }
+
+    // pub async fn string_descriptor(
+    //     &mut self,
+    //     index: u8,
+    //     language_id: u16,
+    // ) -> Result<String, USBError> {
+    //     let data = self
+    //         .get_descriptor(DESCRIPTOR_TYPE_STRING, index, language_id)
+    //         .await?;
+    //     decode_string_descriptor(&data).map_err(|_| USBError::Unknown)
+    // }
 }
