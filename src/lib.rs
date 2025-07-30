@@ -57,3 +57,5 @@ macro_rules! set_impl {
         }
     };
 }
+
+define_int_type!(BusAddr, u64);

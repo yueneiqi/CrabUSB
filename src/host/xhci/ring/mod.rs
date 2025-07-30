@@ -3,7 +3,7 @@ pub use dma_api::Direction;
 use log::trace;
 use xhci::ring::trb::{Link, command, transfer};
 
-use crate::{err::*, page_size};
+use crate::{BusAddr, err::*, page_size};
 
 mod cmd;
 
@@ -70,29 +70,29 @@ impl Ring {
         self.trbs.bus_addr()
     }
 
-    pub fn enque_command(&mut self, mut trb: command::Allowed) -> u64 {
+    pub fn enque_command(&mut self, mut trb: command::Allowed) -> BusAddr {
         if self.cycle {
             trb.set_cycle_bit();
         } else {
             trb.clear_cycle_bit();
         }
         let addr = self.enque_trb(trb.into());
-        trace!("[CMD] >> {trb:?} @{addr:X}");
+        trace!("[CMD] >> {trb:?} @{addr:X?}");
         addr
     }
 
-    pub fn enque_transfer(&mut self, mut trb: transfer::Allowed) -> u64 {
+    pub fn enque_transfer(&mut self, mut trb: transfer::Allowed) -> BusAddr {
         if self.cycle {
             trb.set_cycle_bit();
         } else {
             trb.clear_cycle_bit();
         }
         let addr = self.enque_trb(trb.into());
-        trace!("[Transfer] >> {trb:?} @{addr:X}");
+        trace!("[Transfer] >> {trb:?} @{addr:X?}");
         addr
     }
 
-    pub fn enque_trb(&mut self, trb: TrbData) -> u64 {
+    pub fn enque_trb(&mut self, trb: TrbData) -> BusAddr {
         self.trbs.set(self.i, trb);
         let addr = self.trb_bus_addr(self.i);
         self.next_index();
@@ -113,7 +113,8 @@ impl Ring {
             trace!("link!");
             let address = self.trb_bus_addr(0);
             let mut link = Link::new();
-            link.set_ring_segment_pointer(address).set_toggle_cycle();
+            link.set_ring_segment_pointer(address.into())
+                .set_toggle_cycle();
 
             if self.cycle {
                 link.set_cycle_bit();
@@ -141,16 +142,16 @@ impl Ring {
         }
     }
 
-    pub fn trb_bus_addr(&self, i: usize) -> u64 {
+    pub fn trb_bus_addr(&self, i: usize) -> BusAddr {
         let base = self.bus_addr();
-        base + (i * size_of::<TrbData>()) as u64
+        (base + (i * size_of::<TrbData>()) as u64).into()
     }
 
-    pub fn current_trb_addr(&self) -> u64 {
+    pub fn current_trb_addr(&self) -> BusAddr {
         self.trb_bus_addr(self.i)
     }
 
-    pub fn trb_bus_addr_list(&self) -> impl Iterator<Item = u64> + '_ {
+    pub fn trb_bus_addr_list(&self) -> impl Iterator<Item = BusAddr> + '_ {
         (0..self.len()).map(move |i| self.trb_bus_addr(i))
     }
 }

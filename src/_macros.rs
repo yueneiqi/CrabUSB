@@ -1,8 +1,14 @@
-macro_rules! define_id {
+macro_rules! define_int_type {
     ($name:ident, $id:ty) => {
         #[repr(transparent)]
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
         pub struct $name(pub $id);
+
+        impl $name {
+            pub fn raw(&self) -> $id {
+                self.0
+            }
+        }
 
         impl From<$id> for $name {
             fn from(val: $id) -> Self {

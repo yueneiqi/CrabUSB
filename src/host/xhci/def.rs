@@ -1,4 +1,4 @@
-define_id!(SlotId, u8);
+define_int_type!(SlotId, u8);
 
 impl SlotId {
     pub fn as_u8(&self) -> u8 {
@@ -10,8 +10,7 @@ impl SlotId {
     }
 }
 
-
-define_id!(Dci, u8);
+define_int_type!(Dci, u8);
 
 impl Dci {
     pub fn as_u8(&self) -> u8 {
@@ -22,3 +21,4 @@ impl Dci {
         self.0 as usize
     }
 }
+

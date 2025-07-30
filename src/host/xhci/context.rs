@@ -15,7 +15,7 @@ use xhci::{
 
 use super::{XhciRegisters, ring::Ring};
 use crate::{
-    Slot,
+    BusAddr, Slot,
     err::*,
     standard::trans::{self, control::ControlTransfer},
     wait::WaitMapWeak,
@@ -154,13 +154,13 @@ impl XhciSlot {
 
         let ring = self.ctrl_ring_mut();
 
-        let mut trb_ptr = 0;
+        let mut trb_ptr = BusAddr(0);
 
         for trb in trbs {
             trb_ptr = ring.enque_transfer(trb);
         }
 
-        trace!("trb : {trb_ptr:#x}");
+        trace!("trb : {trb_ptr:#x?}");
 
         wmb();
 
@@ -171,7 +171,7 @@ impl XhciSlot {
             .doorbell
             .write_volatile_at(self.id.as_usize(), bell);
 
-        let ret = self.wait.try_wait_for_result(trb_ptr).unwrap().await;
+        let ret = self.wait.try_wait_for_result(trb_ptr.raw()).unwrap().await;
 
         match ret.completion_code() {
             Ok(code) => {
