@@ -2,8 +2,16 @@ use num_enum::{FromPrimitive, IntoPrimitive};
 
 use super::Direction;
 
-#[derive(Debug, Clone)]
 pub struct ControlTransfer {
+    pub transfer_type: TransferType,
+    pub recipient: Recipient,
+    pub request: Request,
+    pub index: u16,
+    pub value: u16,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ControlTransferRaw {
     pub request_type: RequestType,
     pub request: Request,
     pub index: u16,

@@ -17,7 +17,7 @@ use crate::{
     err::USBError,
     standard::trans::{
         self,
-        control::{ControlTransfer, Recipient, Request, RequestType},
+        control::{ControlTransfer, ControlTransferRaw, Recipient, Request, RequestType},
     },
     wait::WaitMap,
     xhci::{
@@ -128,7 +128,53 @@ impl Device {
         Ok(())
     }
 
-    pub async fn control_transfer(&mut self, urb: ControlTransfer) -> Result<(), USBError> {
+    pub async fn control_transfer_in(
+        &mut self,
+        param: ControlTransfer,
+        buff: &mut [u8],
+    ) -> Result<(), USBError> {
+        self.control_transfer(ControlTransferRaw {
+            request_type: RequestType {
+                direction: trans::Direction::In,
+                transfer_type: param.transfer_type,
+                recipient: param.recipient,
+            },
+            request: param.request,
+            index: param.index,
+            value: param.value,
+            data: if buff.is_empty() {
+                None
+            } else {
+                Some((buff.as_mut_ptr() as usize, buff.len() as _))
+            },
+        })
+        .await
+    }
+
+    pub async fn control_transfer_out(
+        &mut self,
+        param: ControlTransfer,
+        buff: &[u8],
+    ) -> Result<(), USBError> {
+        self.control_transfer(ControlTransferRaw {
+            request_type: RequestType {
+                direction: trans::Direction::Out,
+                transfer_type: param.transfer_type,
+                recipient: param.recipient,
+            },
+            request: param.request,
+            index: param.index,
+            value: param.value,
+            data: if buff.is_empty() {
+                None
+            } else {
+                Some((buff.as_ptr() as usize, buff.len() as _))
+            },
+        })
+        .await
+    }
+
+    async fn control_transfer(&mut self, urb: ControlTransferRaw) -> Result<(), USBError> {
         let mut trbs: Vec<transfer::Allowed> = Vec::new();
         let mut setup = transfer::SetupStage::default();
 
@@ -254,19 +300,18 @@ impl Device {
     async fn query_packet_size(&mut self) -> Result<u16, USBError> {
         trace!("control_fetch_control_point_packet_size");
 
-        let data = [0u8; 8];
+        let mut data = [0u8; 8];
 
-        self.control_transfer(ControlTransfer {
-            request_type: RequestType::new(
-                trans::Direction::In,
-                trans::control::TransferType::Standard,
-                Recipient::Device,
-            ),
-            request: Request::GetDescriptor,
-            index: 0,
-            value: 1 << 8,
-            data: Some((data.as_ptr() as usize, data.len() as _)),
-        })
+        self.control_transfer_in(
+            ControlTransfer {
+                request: Request::GetDescriptor,
+                index: 0,
+                value: 1 << 8,
+                transfer_type: trans::control::TransferType::Standard,
+                recipient: Recipient::Device,
+            },
+            &mut data,
+        )
         .await?;
 
         let packet_size = data
