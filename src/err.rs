@@ -16,6 +16,8 @@ pub enum USBError {
     ControllerClosed,
     #[error("not found")]
     NotFound,
+    #[error("configuration not set")]
+    ConfigurationNotSet,
 }
 
 pub type Result<T = ()> = core::result::Result<T, USBError>;
