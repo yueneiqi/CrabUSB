@@ -294,7 +294,7 @@ impl Root {
         self.wait_cmd.try_wait_for_result(trb_addr.raw()).unwrap()
     }
 
-    fn litsen_transfer(&mut self, ring: &Ring) {
+    pub(crate) fn litsen_transfer(&mut self, ring: &Ring) {
         self.wait_transfer
             .append(ring.trb_bus_addr_list().map(|a| a.raw()));
     }
