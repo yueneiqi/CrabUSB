@@ -1,5 +1,6 @@
 use crate::standard;
 
+#[allow(unused)]
 pub(crate) struct EndpointDescriptor {
     pub address: u8,
     pub max_packet_size: u16,
