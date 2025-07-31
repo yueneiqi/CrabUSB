@@ -46,6 +46,7 @@ impl EndpointDescriptor {
         // direction: OUT=0, IN=1
         let endpoint_number = self.address & 0x0F; // 提取端点号（低4位）
         (endpoint_number * 2)
+            + 1
             + if self.direction == standard::transfer::Direction::In {
                 1
             } else {
