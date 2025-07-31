@@ -537,7 +537,11 @@ impl Device {
 
                 control_context.set_add_context_flag(dci as usize);
 
-                debug!("init ep {} {:?}", dci, ep.endpoint_type());
+                debug!(
+                    "init ep addr {:#x}  dci {dci} {:?}",
+                    ep.address,
+                    ep.endpoint_type()
+                );
 
                 let ep_mut = input.device_mut().endpoint_mut(dci as _);
                 ep_mut.set_interval(ep.interval);

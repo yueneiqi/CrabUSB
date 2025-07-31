@@ -43,14 +43,18 @@ impl EndpointDescriptor {
 
     pub fn dci(&self) -> u8 {
         // DCI = (endpoint_number * 2) + direction
-        // direction: OUT=0, IN=1
+        // Control endpoint always has DCI 1
         let endpoint_number = self.address & 0x0F; // 提取端点号（低4位）
         (endpoint_number * 2)
-            + 1
-            + if self.direction == standard::transfer::Direction::In {
-                1
-            } else {
-                0
+            + match self.endpoint_type() {
+                xhci::context::EndpointType::Control => 1, // Control endpoint always has DCI 1
+                _ => {
+                    if self.direction == standard::transfer::Direction::In {
+                        1
+                    } else {
+                        0
+                    }
+                }
             }
     }
 }
