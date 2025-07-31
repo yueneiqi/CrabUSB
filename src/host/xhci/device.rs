@@ -21,7 +21,7 @@ use crate::{
         descriptors::{
             ConfigurationDescriptor, DESCRIPTOR_LEN_CONFIGURATION, DESCRIPTOR_LEN_DEVICE,
             DESCRIPTOR_TYPE_CONFIGURATION, DESCRIPTOR_TYPE_DEVICE, DESCRIPTOR_TYPE_STRING,
-            DeviceDescriptor, InterfaceDescriptor, decode_string_descriptor,
+            DeviceDescriptor, decode_string_descriptor,
         },
         transfer::{
             Direction,
@@ -480,6 +480,11 @@ impl Device {
 
         self.current_config_value = Some(config_value);
 
+        self.with_input(|input| {
+            let c = input.control_mut();
+            c.set_configuration_value(config_value);
+        });
+
         debug!("Device configuration set to {config_value}");
         Ok(())
     }
@@ -487,21 +492,28 @@ impl Device {
     /// 配置端点（为指定配置设置端点上下文）
     async fn configure_endpoints_internal(
         &mut self,
-        interface: u8,
-        alternate: u8,
         endpoints: &[endpoint::EndpointDescriptor],
     ) -> Result<(), USBError> {
         trace!("Configuring endpoints for interface");
-
-        let config_value = self
+        let _ = self
             .current_config_value
             .ok_or(USBError::ConfigurationNotSet)?;
 
         let mut root = self.root.lock();
         let mut max_dci = 1;
 
+        self.with_input(|input| {
+            let control_context = input.control_mut();
+            for i in 0..32 {
+                control_context.clear_add_context_flag(i);
+                if i > 1 {
+                    control_context.clear_drop_context_flag(i);
+                }
+            }
+            control_context.set_add_context_flag(0);
+        });
+
         // 预先计算所有端点的DCI并创建环
-        let mut endpoint_configs = Vec::new();
         for ep in endpoints {
             let dci = ep.dci();
             if dci > max_dci {
@@ -512,8 +524,6 @@ impl Device {
             root.litsen_transfer(ring);
             let ring_addr = ring.bus_addr();
 
-            endpoint_configs.push((ep, dci, ring_addr));
-
             trace!(
                 "Configuring endpoint: DCI {}, Type: {:?}, Max Packet Size: {}, Interval: {}",
                 dci,
@@ -521,33 +531,15 @@ impl Device {
                 ep.max_packet_size,
                 ep.interval
             );
-        }
-        drop(root);
 
-        // 使用with_empty_input确保Input Context从干净状态开始
-        self.with_empty_input(|input| {
-            let control_context = input.control_mut();
+            self.with_input(|input| {
+                let control_context = input.control_mut();
 
-            // 设置A0标志（Slot Context必须设置）
-            control_context.set_add_context_flag(0);
-            control_context.set_configuration_value(config_value);
-            control_context.set_interface_number(interface);
-            control_context.set_alternate_setting(alternate);
+                control_context.set_add_context_flag(dci as usize);
 
-            // 为每个端点设置Add Context标志
-            for (_ep, dci, _ring_addr) in &endpoint_configs {
-                control_context.set_add_context_flag(*dci as usize);
-            }
-
-            // 更新Slot Context的context entries
-            let slot_context = input.device_mut().slot_mut();
-            slot_context.set_context_entries(max_dci + 1);
-
-            // 配置每个端点
-            for (ep, dci, ring_addr) in &endpoint_configs {
                 debug!("init ep {} {:?}", dci, ep.endpoint_type());
 
-                let ep_mut = input.device_mut().endpoint_mut(*dci as _);
+                let ep_mut = input.device_mut().endpoint_mut(dci as _);
                 ep_mut.set_interval(ep.interval);
                 ep_mut.set_endpoint_type(ep.endpoint_type());
                 ep_mut.set_tr_dequeue_pointer(ring_addr.raw());
@@ -572,7 +564,15 @@ impl Device {
                 if let crate::standard::descriptors::TransferType::Isochronous = ep.transfer_type {
                     ep_mut.set_error_count(0);
                 }
-            }
+            });
+        }
+        drop(root);
+
+        self.with_input(|input| {
+            input
+                .device_mut()
+                .slot_mut()
+                .set_context_entries(max_dci + 1);
         });
 
         mb();
@@ -614,8 +614,7 @@ impl Device {
 
         let endpoints = self.find_interface_endpoints(interface, alternate)?;
 
-        self.configure_endpoints_internal(interface, alternate, &endpoints)
-            .await?;
+        self.configure_endpoints_internal(&endpoints).await?;
 
         Ok(())
     }
