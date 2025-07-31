@@ -14,6 +14,8 @@ pub enum USBError {
     TransferEventError(xhci::ring::trb::event::CompletionCode),
     #[error("controller closed")]
     ControllerClosed,
+    #[error("not found")]
+    NotFound,
 }
 
 pub type Result<T = ()> = core::result::Result<T, USBError>;

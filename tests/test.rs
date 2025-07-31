@@ -53,6 +53,23 @@ mod tests {
                     info!("product: {product}");
                 }
 
+                for config in device.configuration_descriptors().unwrap() {
+                    info!("config: {:?}", config.configuration_value());
+
+                    for interface in config.interfaces() {
+                        info!("interface: {:?}", interface.interface_number());
+                        for alt in interface.alt_settings() {
+                            info!("alternate: {alt:?}");
+                        }
+                    }
+                }
+
+                device.set_configuration(1).await.unwrap();
+                info!("set configuration ok");
+
+                device.set_interface(0, 0).await.unwrap();
+                info!("set interface ok");
+
                 drop(device);
             }
         });
