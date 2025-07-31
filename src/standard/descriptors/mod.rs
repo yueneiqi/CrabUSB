@@ -720,9 +720,9 @@ pub(crate) fn parse_concatenated_config_descriptors(
     })
 }
 
-pub(crate) fn validate_string_descriptor(data: &[u8]) -> bool {
-    data.len() >= 2 && data[0] as usize == data.len() && data[1] == DESCRIPTOR_TYPE_STRING
-}
+// pub(crate) fn validate_string_descriptor(data: &[u8]) -> bool {
+//     data.len() >= 2 && data[0] as usize == data.len() && data[1] == DESCRIPTOR_TYPE_STRING
+// }
 
 pub(crate) fn decode_string_descriptor(data: &[u8]) -> Result<String, ()> {
     // if !validate_string_descriptor(data) {

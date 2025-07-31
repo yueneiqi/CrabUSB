@@ -33,7 +33,7 @@ use crate::{
         append_port_to_route_string,
         context::DeviceContext,
         def::{Dci, SlotId},
-        parse_default_max_packet_size_from_port_speed,
+        endpoint, parse_default_max_packet_size_from_port_speed,
         ring::Ring,
         root::RootHub,
     },
@@ -313,7 +313,9 @@ impl Device {
     pub(crate) fn ctrl_ring_mut(&mut self) -> &mut Ring {
         unsafe {
             let data = &mut *self.ctx.data.get();
-            &mut data.transfer_rings[0]
+            data.transfer_rings
+                .get_mut(&Dci::CTRL)
+                .expect("Control ring not found")
         }
     }
 
@@ -321,7 +323,7 @@ impl Device {
     //     self.id
     // }
 
-    fn modify_input<F>(&self, f: F)
+    fn with_input<F>(&self, f: F)
     where
         F: FnOnce(&mut dyn InputHandler),
     {
@@ -362,7 +364,7 @@ impl Device {
     }
 
     async fn set_ep_packet_size(&self, dci: Dci, max_packet_size: u16) -> Result<(), USBError> {
-        self.modify_input(|input| {
+        self.with_input(|input| {
             let endpoint = input.device_mut().endpoint_mut(dci.as_usize());
             endpoint.set_max_packet_size(max_packet_size);
         });
@@ -463,6 +465,7 @@ impl Device {
     /// * `configuration` - 配置值。0表示取消配置，非零值选择特定配置
     pub async fn set_configuration(&mut self, config_value: u8) -> Result<(), USBError> {
         trace!("Setting device configuration to {config_value}");
+
         self.control_out(
             Control {
                 request: Request::SetConfiguration,
@@ -477,6 +480,11 @@ impl Device {
 
         self.current_config_value = Some(config_value);
 
+        self.with_input(|input| {
+            let c = input.control_mut();
+            c.set_configuration_value(config_value);
+        });
+
         debug!("Device configuration set to {config_value}");
         Ok(())
     }
@@ -484,145 +492,116 @@ impl Device {
     /// 配置端点（为指定配置设置端点上下文）
     async fn configure_endpoints_internal(
         &mut self,
-        config: &ConfigurationDescriptor<'_>,
+        endpoints: &[endpoint::EndpointDescriptor],
     ) -> Result<(), USBError> {
-        trace!(
-            "Configuring endpoints for configuration {}",
-            config.configuration_value()
-        );
+        trace!("Configuring endpoints for interface");
+        let _ = self
+            .current_config_value
+            .ok_or(USBError::ConfigurationNotSet)?;
 
-        // 首先收集所有端点信息
-        let mut endpoints_info = Vec::new();
-        let mut max_dci = 1u8; // 控制端点DCI=1
+        let mut root = self.root.lock();
+        let mut max_dci = 1;
 
-        for interface in config.interfaces() {
-            // 使用默认的alternate setting (0)
-            if let Some(alt_setting) = interface.alt_settings().next() {
-                for endpoint in alt_setting.endpoints() {
-                    let ep_addr = endpoint.address();
-
-                    // 计算DCI：DCI = (endpoint_number * 2) + direction
-                    // direction: OUT=0, IN=1
-                    let ep_num = ep_addr & 0x0F;
-                    let direction = if (ep_addr & 0x80) != 0 { 1 } else { 0 };
-                    let dci = (ep_num * 2) + direction;
-
-                    if dci > max_dci {
-                        max_dci = dci;
-                    }
-
-                    // 设置端点类型
-                    let ep_type = match endpoint.transfer_type() {
-                        crate::standard::descriptors::TransferType::Control => {
-                            xhci::context::EndpointType::Control
-                        }
-                        crate::standard::descriptors::TransferType::Isochronous => {
-                            if endpoint.direction() == Direction::In {
-                                xhci::context::EndpointType::IsochIn
-                            } else {
-                                xhci::context::EndpointType::IsochOut
-                            }
-                        }
-                        crate::standard::descriptors::TransferType::Bulk => {
-                            if endpoint.direction() == Direction::In {
-                                xhci::context::EndpointType::BulkIn
-                            } else {
-                                xhci::context::EndpointType::BulkOut
-                            }
-                        }
-                        crate::standard::descriptors::TransferType::Interrupt => {
-                            if endpoint.direction() == Direction::In {
-                                xhci::context::EndpointType::InterruptIn
-                            } else {
-                                xhci::context::EndpointType::InterruptOut
-                            }
-                        }
-                    };
-
-                    endpoints_info.push((
-                        dci,
-                        ep_type,
-                        endpoint.max_packet_size() as u16,
-                        endpoint.interval(),
-                    ));
-                }
-            }
-        }
-
-        let ctrl_ring_addr = self.ctx.ctrl_ring().bus_addr();
-
-        // 准备Input Context来配置端点
-        self.with_empty_input(|input| {
-            // 首先设置Control Context
-            {
-                let control_context = input.control_mut();
-
-                // 设置A0标志（Slot Context）
-                control_context.set_add_context_flag(0);
-
-                // 为每个端点设置Add Context标志
-                for &(dci, _, _, _) in &endpoints_info {
-                    control_context.set_add_context_flag(dci as usize);
-                }
-
-                // 清除所有Drop Context标志
-                for i in 0..32 {
+        self.with_input(|input| {
+            let control_context = input.control_mut();
+            for i in 0..32 {
+                control_context.clear_add_context_flag(i);
+                if i > 1 {
                     control_context.clear_drop_context_flag(i);
                 }
             }
+            control_context.set_add_context_flag(0);
+        });
 
-            // 获取device context的可变引用
-            let device_context = input.device_mut();
-
-            // 配置所有端点
-            for &(dci, ep_type, max_packet_size, interval) in &endpoints_info {
-                let ep_ctx = device_context.endpoint_mut(dci as usize);
-
-                ep_ctx.set_endpoint_type(ep_type);
-                ep_ctx.set_max_packet_size(max_packet_size);
-                ep_ctx.set_max_burst_size(0); // USB 2.0设备通常为0
-                ep_ctx.set_interval(interval);
-                ep_ctx.set_max_primary_streams(0);
-                ep_ctx.set_mult(0);
-                ep_ctx.set_error_count(3);
-
-                // TODO: 设置Transfer Ring
-                // 现在先使用控制端点的ring作为占位符
-                ep_ctx.set_tr_dequeue_pointer(ctrl_ring_addr.raw());
-                ep_ctx.set_dequeue_cycle_state(); // 初始cycle state为1
+        // 预先计算所有端点的DCI并创建环
+        for ep in endpoints {
+            let dci = ep.dci();
+            if dci > max_dci {
+                max_dci = dci;
             }
 
-            // 更新Slot Context的Context Entries字段
-            device_context.slot_mut().set_context_entries(max_dci);
+            let ring = self.ctx.new_ring(dci.into())?;
+            root.litsen_transfer(ring);
+            let ring_addr = ring.bus_addr();
+
+            trace!(
+                "Configuring endpoint: DCI {}, Type: {:?}, Max Packet Size: {}, Interval: {}",
+                dci,
+                ep.endpoint_type(),
+                ep.max_packet_size,
+                ep.interval
+            );
+
+            self.with_input(|input| {
+                let control_context = input.control_mut();
+
+                control_context.set_add_context_flag(dci as usize);
+
+                debug!(
+                    "init ep addr {:#x}  dci {dci} {:?}",
+                    ep.address,
+                    ep.endpoint_type()
+                );
+
+                let ep_mut = input.device_mut().endpoint_mut(dci as _);
+                ep_mut.set_interval(ep.interval);
+                ep_mut.set_endpoint_type(ep.endpoint_type());
+                ep_mut.set_tr_dequeue_pointer(ring_addr.raw());
+                ep_mut.set_max_packet_size(ep.max_packet_size);
+                ep_mut.set_error_count(3);
+                ep_mut.set_dequeue_cycle_state();
+
+                match ep.transfer_type {
+                    crate::standard::descriptors::TransferType::Isochronous
+                    | crate::standard::descriptors::TransferType::Interrupt => {
+                        //init for isoch/interrupt
+                        ep_mut.set_max_packet_size(ep.max_packet_size & 0x7ff); //refer xhci page 162
+                        ep_mut.set_max_burst_size(
+                            ((ep.max_packet_size & 0x1800) >> 11).try_into().unwrap(),
+                        );
+                        ep_mut.set_mult(0); //always 0 for interrupt
+                        ep_mut.set_max_endpoint_service_time_interval_payload_low(4);
+                    }
+                    _ => {}
+                }
+
+                if let crate::standard::descriptors::TransferType::Isochronous = ep.transfer_type {
+                    ep_mut.set_error_count(0);
+                }
+            });
+        }
+        drop(root);
+
+        self.with_input(|input| {
+            input
+                .device_mut()
+                .slot_mut()
+                .set_context_entries(max_dci + 1);
         });
 
         mb();
 
-        // 发送Configure Endpoint命令
-        // 注意：我们需要检查xhci库是否支持ConfigureEndpoint命令
-        // 如果不支持，我们可能需要使用其他方法或更新依赖
-
-        // 暂时使用EvaluateContext作为替代，这不是正确的实现
-        // 正确的实现应该使用ConfigureEndpoint命令
-        trace!(
-            "Warning: Using EvaluateContext instead of ConfigureEndpoint - this is a temporary workaround"
-        );
-
         let _result = self
             .root
-            .post_cmd(command::Allowed::EvaluateContext(
-                *command::EvaluateContext::default()
+            .post_cmd(command::Allowed::ConfigureEndpoint(
+                *command::ConfigureEndpoint::default()
                     .set_slot_id(self.id.into())
                     .set_input_context_pointer(self.ctx.input_bus_addr()),
             ))
             .await?;
 
-        debug!("Endpoints configured successfully (using temporary workaround)");
+        debug!("Endpoints configured successfully");
         Ok(())
     }
 
     pub async fn set_interface(&mut self, interface: u8, alternate: u8) -> Result<(), USBError> {
         trace!("Setting interface {interface}, alternate {alternate}");
+
+        self.with_input(|input| {
+            let c = input.control_mut();
+            c.set_interface_number(interface);
+            c.set_alternate_setting(alternate);
+        });
 
         self.control_out(
             Control {
@@ -635,8 +614,31 @@ impl Device {
             &[],
         )
         .await?;
+        debug!("Interface {interface} set successfully");
 
-        debug!("Interface {interface} claimed successfully");
+        let endpoints = self.find_interface_endpoints(interface, alternate)?;
+
+        self.configure_endpoints_internal(&endpoints).await?;
+
         Ok(())
+    }
+
+    fn find_interface_endpoints(
+        &self,
+        interface: u8,
+        alternate: u8,
+    ) -> Result<Vec<super::endpoint::EndpointDescriptor>, USBError> {
+        for config in self.configuration_descriptors()? {
+            for iface in config.interfaces() {
+                if iface.interface_number() == interface {
+                    for alt in iface.alt_settings() {
+                        if alt.alternate_setting() == alternate {
+                            return Ok(alt.endpoints().map(|ep| ep.into()).collect::<Vec<_>>());
+                        }
+                    }
+                }
+            }
+        }
+        Err(USBError::NotFound)
     }
 }

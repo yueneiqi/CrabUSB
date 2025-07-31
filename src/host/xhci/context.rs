@@ -1,11 +1,14 @@
 use core::cell::UnsafeCell;
 
-use alloc::{sync::Arc, vec::Vec};
+use alloc::{collections::btree_map::BTreeMap, sync::Arc, vec::Vec};
 use dma_api::{DBox, DVec};
 use xhci::context::{Device32Byte, Device64Byte, Input32Byte, Input64Byte, InputHandler};
 
 use super::ring::Ring;
-use crate::{err::*, xhci::SlotId};
+use crate::{
+    err::*,
+    xhci::{SlotId, def::Dci},
+};
 
 pub struct DeviceContextList {
     pub dcbaa: DVec<u64>,
@@ -26,7 +29,7 @@ struct Context64 {
 pub struct ContextData {
     ctx64: Option<Context64>,
     ctx32: Option<Context32>,
-    pub transfer_rings: Vec<Ring>,
+    pub transfer_rings: BTreeMap<Dci, Ring>,
 }
 
 pub struct DeviceContext {
@@ -118,7 +121,7 @@ impl DeviceContext {
             data: UnsafeCell::new(ContextData {
                 ctx64,
                 ctx32,
-                transfer_rings: Vec::new(),
+                transfer_rings: Default::default(),
             }),
         })
     }
@@ -126,7 +129,7 @@ impl DeviceContext {
     pub fn ctrl_ring(&self) -> &Ring {
         unsafe {
             let data = &*self.data.get();
-            &data.transfer_rings[0]
+            &data.transfer_rings[&Dci::CTRL]
         }
     }
 
@@ -134,6 +137,15 @@ impl DeviceContext {
         unsafe {
             let data = &*self.data.get();
             data.input_bus_addr()
+        }
+    }
+
+    pub fn new_ring(&self, dci: Dci) -> Result<&Ring> {
+        let ring = Ring::new(true, dma_api::Direction::Bidirectional)?;
+        unsafe {
+            let data = &mut *self.data.get();
+            data.transfer_rings.insert(dci, ring);
+            Ok(&data.transfer_rings[&dci])
         }
     }
 }
@@ -162,7 +174,10 @@ impl DeviceContextList {
         self.dcbaa.set(slot_id.as_usize(), ctx_mut.dcbaa());
 
         // With control transfer, we need at least one transfer ring
-        ctx_mut.transfer_rings = alloc::vec![Ring::new(true, dma_api::Direction::Bidirectional)?];
+        ctx_mut.transfer_rings.insert(
+            Dci::CTRL,
+            Ring::new(true, dma_api::Direction::Bidirectional)?,
+        );
 
         self.ctx_list[slot_id.as_usize()] = Some(ctx.clone());
 
