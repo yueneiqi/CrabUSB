@@ -47,6 +47,23 @@ impl ContextData {
         }
     }
 
+    pub fn with_empty_input<F>(&mut self, f: F)
+    where
+        F: FnOnce(&mut dyn InputHandler),
+    {
+        if let Some(ctx64) = &mut self.ctx64 {
+            let mut input = Input64Byte::new_64byte();
+            f(&mut input);
+            ctx64.input.write(input);
+        } else if let Some(ctx32) = &mut self.ctx32 {
+            let mut input = Input32Byte::new_32byte();
+            f(&mut input);
+            ctx32.input.write(input);
+        } else {
+            panic!("No context available");
+        }
+    }
+
     pub fn with_input<F>(&mut self, f: F)
     where
         F: FnOnce(&mut dyn InputHandler),

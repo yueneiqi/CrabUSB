@@ -48,6 +48,11 @@ mod tests {
             for mut device in ls {
                 let desc = device.descriptor().await.unwrap();
                 info!("device: {desc:?}");
+                if let Some(index) = desc.product_string_index() {
+                    let product = device.string_descriptor(index, 0).await.unwrap();
+                    info!("product: {product}");
+                }
+
                 drop(device);
             }
         });

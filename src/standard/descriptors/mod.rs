@@ -725,9 +725,10 @@ pub(crate) fn validate_string_descriptor(data: &[u8]) -> bool {
 }
 
 pub(crate) fn decode_string_descriptor(data: &[u8]) -> Result<String, ()> {
-    if !validate_string_descriptor(data) {
-        return Err(());
-    }
+    // if !validate_string_descriptor(data) {
+    //     warn!("invalid string descriptor");
+    //     return Err(());
+    // }
 
     Ok(char::decode_utf16(
         data[2..]

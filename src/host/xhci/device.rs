@@ -1,9 +1,11 @@
-use alloc::{sync::Arc, vec::Vec};
+use core::num::NonZero;
+
+use alloc::{string::String, sync::Arc, vec::Vec};
 use dma_api::DSliceMut;
 use log::{debug, trace};
 use mbarrier::mb;
 use xhci::{
-    context::{Input32Byte, InputHandler},
+    context::InputHandler,
     registers::doorbell,
     ring::trb::{
         command,
@@ -17,8 +19,8 @@ use crate::{
     err::USBError,
     standard::{
         descriptors::{
-            DESCRIPTOR_LEN_DEVICE, DESCRIPTOR_TYPE_DEVICE, DeviceDescriptor,
-            language_id::US_ENGLISH,
+            DESCRIPTOR_LEN_DEVICE, DESCRIPTOR_TYPE_DEVICE, DESCRIPTOR_TYPE_STRING,
+            DeviceDescriptor, decode_string_descriptor, language_id::US_ENGLISH,
         },
         transfer::{
             Direction,
@@ -68,7 +70,7 @@ impl Device {
         trace!("Initializing device with ID: {}", self.id.as_u8());
         // Perform initialization logic here
         self.address().await?;
-        let max_packet_size = self.query_packet_size().await?;
+        let max_packet_size = self.control_max_packet_size().await?;
 
         trace!("Max packet size: {max_packet_size}");
         self.set_ep_packet_size(Dci::CTRL, max_packet_size).await?;
@@ -84,20 +86,30 @@ impl Device {
         // ctrl dci
         let dci = 1;
         trace!(
-            "ctrl ring: {ctrl_ring_addr:#x?}, port speed: {port_speed}, max packet size: {max_packet_size}"
+            "ctrl ring: {ctrl_ring_addr:x?}, port speed: {port_speed}, max packet size: {max_packet_size}"
         );
 
         let ring_cycle_bit = self.ctx.ctrl_ring().cycle;
 
-        self.with_input(|input| {
+        // 1. Allocate an Input Context data structure (6.2.5) and initialize all fields to
+        // ‘0’.
+        self.with_empty_input(|input| {
             let control_context = input.control_mut();
-
+            // Initialize the Input Control Context (6.2.5.1) of the Input Context by
+            // setting the A0 and A1 flags to ‘1’. These flags indicate that the Slot
+            // Context and the Endpoint 0 Context of the Input Context are affected by
+            // the command.
             control_context.set_add_context_flag(0);
             control_context.set_add_context_flag(1);
             for i in 2..32 {
                 control_context.clear_drop_context_flag(i);
             }
 
+            // Initialize the Input Slot Context data structure (6.2.2).
+            // • Root Hub Port Number = Topology defined.
+            // • Route String = Topology defined. Refer to section 8.9 in the USB3 spec. Note
+            // that the Route String does not include the Root Hub Port Number.
+            // • Context Entries = 1.
             let slot_context = input.device_mut().slot_mut();
             slot_context.clear_multi_tt();
             slot_context.clear_hub();
@@ -111,20 +123,33 @@ impl Device {
             slot_context.set_interrupter_target(0);
             slot_context.set_speed(port_speed);
 
+            // Initialize the Input default control Endpoint 0 Context (6.2.3).
             let endpoint_0 = input.device_mut().endpoint_mut(dci);
+            // • EP Type = Control.
             endpoint_0.set_endpoint_type(xhci::context::EndpointType::Control);
+            // • Max Packet Size = The default maximum packet size for the Default Control Endpoint,
+            //   as function of the PORTSC Port Speed field.
             endpoint_0.set_max_packet_size(max_packet_size);
+            // • Max Burst Size = 0.
             endpoint_0.set_max_burst_size(0);
-            endpoint_0.set_error_count(3);
+            // • TR Dequeue Pointer = Start address of first segment of the Default Control
+            //   Endpoint Transfer Ring.
             endpoint_0.set_tr_dequeue_pointer(ctrl_ring_addr.raw());
+            // • Dequeue Cycle State (DCS) = 1. Reflects Cycle bit state for valid TRBs written
+            //   by software.
             if ring_cycle_bit {
                 endpoint_0.set_dequeue_cycle_state();
             } else {
                 endpoint_0.clear_dequeue_cycle_state();
             }
+            // • Interval = 0.
             endpoint_0.set_interval(0);
+            // • Max Primary Streams (MaxPStreams) = 0.
             endpoint_0.set_max_primary_streams(0);
+            // • Mult = 0.
             endpoint_0.set_mult(0);
+            // • Error Count (CErr) = 3.
+            endpoint_0.set_error_count(3);
         });
 
         mb();
@@ -284,7 +309,7 @@ impl Device {
     //     self.id
     // }
 
-    fn with_input<F>(&self, f: F)
+    fn modify_input<F>(&self, f: F)
     where
         F: FnOnce(&mut dyn InputHandler),
     {
@@ -294,47 +319,38 @@ impl Device {
         }
     }
 
-    async fn query_packet_size(&mut self) -> Result<u16, USBError> {
+    fn with_empty_input<F>(&self, f: F)
+    where
+        F: FnOnce(&mut dyn InputHandler),
+    {
+        unsafe {
+            let data = &mut *self.ctx.data.get();
+            data.with_empty_input(f);
+        }
+    }
+
+    async fn control_max_packet_size(&mut self) -> Result<u16, USBError> {
         trace!("control_fetch_control_point_packet_size");
 
         let mut data = [0u8; 8];
 
-        self.control_in(
-            Control {
-                request: Request::GetDescriptor,
-                index: 0,
-                value: 1 << 8,
-                transfer_type: ControlType::Standard,
-                recipient: Recipient::Device,
-            },
-            &mut data,
-        )
-        .await?;
+        self.get_descriptor(DESCRIPTOR_TYPE_DEVICE, 0, 0, &mut data)
+            .await?;
 
+        // USB 设备描述符的 bMaxPacketSize0 字段（偏移 7）
+        // 对于控制端点，这是直接的字节数值，不需要解码
         let packet_size = data
-            .last()
+            .get(7) // bMaxPacketSize0 在设备描述符的第8个字节（索引7）
             .map(|&len| if len == 0 { 8u8 } else { len })
-            .unwrap();
-        trace!("packet_size: {packet_size:?}");
+            .unwrap_or(8);
+
+        trace!("Device descriptor bMaxPacketSize0: {packet_size} bytes");
 
         Ok(packet_size as _)
     }
 
     async fn set_ep_packet_size(&self, dci: Dci, max_packet_size: u16) -> Result<(), USBError> {
-        self.with_input(|input| {
-            // 清除所有flags
-            let control_context = input.control_mut();
-            for i in 0..32 {
-                control_context.clear_add_context_flag(i);
-            }
-            // Drop context flags 只能清除索引 2..=31
-            for i in 2..32 {
-                control_context.clear_drop_context_flag(i);
-            }
-            // 设置slot context和要修改的endpoint context flag
-            control_context.set_add_context_flag(0); // slot context
-            control_context.set_add_context_flag(dci.as_usize()); // endpoint context
-
+        self.modify_input(|input| {
             let endpoint = input.device_mut().endpoint_mut(dci.as_usize());
             endpoint.set_max_packet_size(max_packet_size);
         });
@@ -350,7 +366,10 @@ impl Device {
             ))
             .await?;
 
-        debug!("EvaluateContext success, packet size {max_packet_size:?}");
+        debug!(
+            "EvaluateContext success, packet size {max_packet_size:?}{}",
+            if max_packet_size == 9 { "(512)" } else { "" }
+        );
 
         Ok(())
     }
@@ -388,14 +407,14 @@ impl Device {
         Ok(())
     }
 
-    // pub async fn string_descriptor(
-    //     &mut self,
-    //     index: u8,
-    //     language_id: u16,
-    // ) -> Result<String, USBError> {
-    //     let data = self
-    //         .get_descriptor(DESCRIPTOR_TYPE_STRING, index, language_id)
-    //         .await?;
-    //     decode_string_descriptor(&data).map_err(|_| USBError::Unknown)
-    // }
+    pub async fn string_descriptor(
+        &mut self,
+        index: NonZero<u8>,
+        language_id: u16,
+    ) -> Result<String, USBError> {
+        let mut data = alloc::vec![0u8; 256];
+        self.get_descriptor(DESCRIPTOR_TYPE_STRING, index.get(), language_id, &mut data)
+            .await?;
+        decode_string_descriptor(&data).map_err(|_| USBError::Unknown)
+    }
 }
