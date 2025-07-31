@@ -465,6 +465,11 @@ impl Device {
     /// * `configuration` - 配置值。0表示取消配置，非零值选择特定配置
     pub async fn set_configuration(&mut self, config_value: u8) -> Result<(), USBError> {
         trace!("Setting device configuration to {config_value}");
+        self.modify_input(|input| {
+            let c = input.control_mut();
+            c.set_configuration_value(config_value);
+        });
+
         self.control_out(
             Control {
                 request: Request::SetConfiguration,
@@ -491,8 +496,13 @@ impl Device {
         trace!("Configuring endpoints for interface");
 
         let mut root = self.root.lock();
+        let mut max_dci = 1;
         for ep in endpoints {
             let dci = ep.dci();
+            if dci > max_dci {
+                max_dci = dci;
+            }
+
             let ring = self.ctx.new_ring(dci.into())?;
             root.litsen_transfer(ring);
             let ring_addr = ring.bus_addr();
@@ -537,6 +547,12 @@ impl Device {
             });
         }
         drop(root);
+
+        self.modify_input(|input| {
+            let slot_context = input.device_mut().slot_mut();
+            slot_context.set_context_entries(max_dci + 1);
+        });
+
         mb();
 
         let _result = self
@@ -554,6 +570,12 @@ impl Device {
 
     pub async fn set_interface(&mut self, interface: u8, alternate: u8) -> Result<(), USBError> {
         trace!("Setting interface {interface}, alternate {alternate}");
+
+        self.modify_input(|input| {
+            let c = input.control_mut();
+            c.set_interface_number(interface);
+            c.set_alternate_setting(alternate);
+        });
 
         self.control_out(
             Control {
