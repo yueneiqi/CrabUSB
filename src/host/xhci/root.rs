@@ -306,6 +306,14 @@ impl Root {
             .portsc
             .port_speed()
     }
+
+    pub fn is_64_byte(&self) -> bool {
+        self.reg
+            .capability
+            .hccparams1
+            .read_volatile()
+            .addressing_capability()
+    }
 }
 
 #[derive(Clone)]
@@ -400,7 +408,17 @@ impl RootHub {
         debug!("Slot {slot_id} assigned");
         let ctx = {
             let mut root = self.lock();
-            let ctx = root.dev_list.new_ctx(slot_id)?;
+            let is_64 = root
+                .reg
+                .capability
+                .hccparams1
+                .read_volatile()
+                .context_size();
+            debug!(
+                "Creating new context for slot {slot_id}, {}",
+                if is_64 { "64-bit" } else { "32-bit" }
+            );
+            let ctx = root.dev_list.new_ctx(slot_id, is_64)?;
             root.litsen_transfer(ctx.ctrl_ring());
             ctx
         };

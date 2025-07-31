@@ -89,48 +89,47 @@ impl Device {
 
         let ring_cycle_bit = self.ctx.ctrl_ring().cycle;
 
-        let mut input = Input32Byte::default();
-        let control_context = input.control_mut();
+        self.with_input(|input| {
+            let control_context = input.control_mut();
 
-        control_context.set_add_context_flag(0);
-        control_context.set_add_context_flag(1);
-        for i in 2..32 {
-            control_context.clear_drop_context_flag(i);
-        }
+            control_context.set_add_context_flag(0);
+            control_context.set_add_context_flag(1);
+            for i in 2..32 {
+                control_context.clear_drop_context_flag(i);
+            }
 
-        let slot_context = input.device_mut().slot_mut();
-        slot_context.clear_multi_tt();
-        slot_context.clear_hub();
-        slot_context.set_route_string(append_port_to_route_string(0, 0)); // for now, not support more hub ,so hardcode as 0.//TODO: generate route string
-        slot_context.set_context_entries(1);
-        slot_context.set_max_exit_latency(0);
-        slot_context.set_root_hub_port_number(self.port_id.raw() as _); //todo: to use port number
-        slot_context.set_number_of_ports(0);
-        slot_context.set_parent_hub_slot_id(0);
-        slot_context.set_tt_think_time(0);
-        slot_context.set_interrupter_target(0);
-        slot_context.set_speed(port_speed);
+            let slot_context = input.device_mut().slot_mut();
+            slot_context.clear_multi_tt();
+            slot_context.clear_hub();
+            slot_context.set_route_string(append_port_to_route_string(0, 0)); // for now, not support more hub ,so hardcode as 0.//TODO: generate route string
+            slot_context.set_context_entries(1);
+            slot_context.set_max_exit_latency(0);
+            slot_context.set_root_hub_port_number(self.port_id.raw() as _); //todo: to use port number
+            slot_context.set_number_of_ports(0);
+            slot_context.set_parent_hub_slot_id(0);
+            slot_context.set_tt_think_time(0);
+            slot_context.set_interrupter_target(0);
+            slot_context.set_speed(port_speed);
 
-        let endpoint_0 = input.device_mut().endpoint_mut(dci);
-        endpoint_0.set_endpoint_type(xhci::context::EndpointType::Control);
-        endpoint_0.set_max_packet_size(max_packet_size);
-        endpoint_0.set_max_burst_size(0);
-        endpoint_0.set_error_count(3);
-        endpoint_0.set_tr_dequeue_pointer(ctrl_ring_addr.raw());
-        if ring_cycle_bit {
-            endpoint_0.set_dequeue_cycle_state();
-        } else {
-            endpoint_0.clear_dequeue_cycle_state();
-        }
-        endpoint_0.set_interval(0);
-        endpoint_0.set_max_primary_streams(0);
-        endpoint_0.set_mult(0);
-
-        self.set_input(input);
+            let endpoint_0 = input.device_mut().endpoint_mut(dci);
+            endpoint_0.set_endpoint_type(xhci::context::EndpointType::Control);
+            endpoint_0.set_max_packet_size(max_packet_size);
+            endpoint_0.set_max_burst_size(0);
+            endpoint_0.set_error_count(3);
+            endpoint_0.set_tr_dequeue_pointer(ctrl_ring_addr.raw());
+            if ring_cycle_bit {
+                endpoint_0.set_dequeue_cycle_state();
+            } else {
+                endpoint_0.clear_dequeue_cycle_state();
+            }
+            endpoint_0.set_interval(0);
+            endpoint_0.set_max_primary_streams(0);
+            endpoint_0.set_mult(0);
+        });
 
         mb();
 
-        let input_bus_addr = self.input_bus_addr();
+        let input_bus_addr = self.ctx.input_bus_addr();
         trace!("Input context bus address: {input_bus_addr:#x?}");
         let result = self
             .root
@@ -285,17 +284,13 @@ impl Device {
     //     self.id
     // }
 
-    fn set_input(&self, input: Input32Byte) {
+    fn with_input<F>(&self, f: F)
+    where
+        F: FnOnce(&mut dyn InputHandler),
+    {
         unsafe {
             let data = &mut *self.ctx.data.get();
-            data.input.write(input);
-        }
-    }
-
-    fn input_bus_addr(&self) -> u64 {
-        unsafe {
-            let data = &*self.ctx.data.get();
-            data.input.bus_addr()
+            data.with_input(f);
         }
     }
 
@@ -326,7 +321,7 @@ impl Device {
     }
 
     async fn set_ep_packet_size(&self, dci: Dci, max_packet_size: u16) -> Result<(), USBError> {
-        self.modify_input(|input| {
+        self.with_input(|input| {
             // 清除所有flags
             let control_context = input.control_mut();
             for i in 0..32 {
@@ -346,25 +341,18 @@ impl Device {
 
         mb();
 
-        let result = self
+        let _ = self
             .root
             .post_cmd(command::Allowed::EvaluateContext(
                 *command::EvaluateContext::default()
                     .set_slot_id(self.id.into())
-                    .set_input_context_pointer(self.input_bus_addr()),
+                    .set_input_context_pointer(self.ctx.input_bus_addr()),
             ))
             .await?;
 
-        debug!("Set packet size ok {result:?}");
+        debug!("EvaluateContext success, packet size {max_packet_size:?}");
 
         Ok(())
-    }
-
-    fn modify_input(&self, f: impl FnOnce(&mut Input32Byte)) {
-        unsafe {
-            let data = &mut *self.ctx.data.get();
-            data.input.modify(f);
-        }
     }
 
     pub async fn descriptor(&mut self) -> Result<DeviceDescriptor, USBError> {
