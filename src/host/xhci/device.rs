@@ -379,7 +379,7 @@ impl Device {
             return Ok(desc.clone());
         }
         let mut buff = alloc::vec![0u8; DESCRIPTOR_LEN_DEVICE as usize];
-        self.get_descriptor(DESCRIPTOR_TYPE_DEVICE, 0, US_ENGLISH, &mut buff)
+        self.get_descriptor(DESCRIPTOR_TYPE_DEVICE, 0, 0, &mut buff)
             .await?;
         let desc = DeviceDescriptor::new(&buff).ok_or(USBError::Unknown)?;
         self.desc = Some(desc.clone());
