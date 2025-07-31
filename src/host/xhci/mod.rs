@@ -52,6 +52,7 @@ impl Controller for Xhci {
         root_hub.init()?;
         self.root = Some(root_hub);
         trace!("Root hub initialized with max slots: {max_slots}");
+        self.root()?.lock().enable_irq();
         self.root()?.wait_for_running().await;
         self.root()?.lock().reset_ports();
         Ok(())
@@ -146,7 +147,7 @@ impl Xhci {
         }
         debug!("Reset finish");
 
-        debug!("Is 64 bit {}", self.is_64_byte());
+        // debug!("Is 64 bit {}", self.is_64_byte());
         Ok(())
     }
 
@@ -260,13 +261,7 @@ impl Xhci {
         port_idx_list
     }
 
-    fn is_64_byte(&self) -> bool {
-        self.reg
-            .capability
-            .hccparams1
-            .read_volatile()
-            .addressing_capability()
-    }
+
 
     fn root(&self) -> Result<&RootHub> {
         self.root.as_ref().ok_or(USBError::NotInitialized)

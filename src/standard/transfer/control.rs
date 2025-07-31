@@ -2,8 +2,8 @@ use num_enum::{FromPrimitive, IntoPrimitive};
 
 use super::Direction;
 
-pub struct ControlTransfer {
-    pub transfer_type: TransferType,
+pub struct Control {
+    pub transfer_type: ControlType,
     pub recipient: Recipient,
     pub request: Request,
     pub index: u16,
@@ -11,7 +11,7 @@ pub struct ControlTransfer {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct ControlTransferRaw {
+pub(crate) struct ControlRaw {
     pub request_type: RequestType,
     pub request: Request,
     pub index: u16,
@@ -57,19 +57,19 @@ pub enum Request {
 #[derive(Debug, Clone)]
 pub struct RequestType {
     pub direction: Direction,
-    pub transfer_type: TransferType,
+    pub control_type: ControlType,
     pub recipient: Recipient,
 }
 
 impl RequestType {
     pub const fn new(
         direction: Direction,
-        transfer_type: TransferType,
+        transfer_type: ControlType,
         recipient: Recipient,
     ) -> RequestType {
         RequestType {
             direction,
-            transfer_type,
+            control_type: transfer_type,
             recipient,
         }
     }
@@ -77,13 +77,13 @@ impl RequestType {
 
 impl From<RequestType> for u8 {
     fn from(value: RequestType) -> Self {
-        ((value.direction as u8) << 7) | ((value.transfer_type as u8) << 5) | value.recipient as u8
+        ((value.direction as u8) << 7) | ((value.control_type as u8) << 5) | value.recipient as u8
     }
 }
 
 #[derive(Copy, Clone, Debug)]
 #[repr(u8)]
-pub enum TransferType {
+pub enum ControlType {
     Standard = 0,
     Class = 1,
     Vendor = 2,

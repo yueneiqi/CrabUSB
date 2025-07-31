@@ -2,7 +2,7 @@ use core::cell::UnsafeCell;
 
 use alloc::{sync::Arc, vec::Vec};
 use dma_api::{DBox, DVec};
-use xhci::context::{Device32Byte, Input32Byte};
+use xhci::context::{Device32Byte, Device64Byte, Input32Byte, Input64Byte, InputHandler};
 
 use super::ring::Ring;
 use crate::{err::*, xhci::SlotId};
@@ -13,9 +13,19 @@ pub struct DeviceContextList {
     max_slots: usize,
 }
 
+struct Context32 {
+    out: DBox<Device32Byte>,
+    input: DBox<Input32Byte>,
+}
+
+struct Context64 {
+    out: DBox<Device64Byte>,
+    input: DBox<Input64Byte>,
+}
+
 pub struct ContextData {
-    pub out: DBox<Device32Byte>,
-    pub input: DBox<Input32Byte>,
+    ctx64: Option<Context64>,
+    ctx32: Option<Context32>,
     pub transfer_rings: Vec<Ring>,
 }
 
@@ -26,18 +36,88 @@ pub struct DeviceContext {
 unsafe impl Send for DeviceContext {}
 unsafe impl Sync for DeviceContext {}
 
-impl ContextData {}
+impl ContextData {
+    pub fn dcbaa(&self) -> u64 {
+        if let Some(ctx64) = &self.ctx64 {
+            ctx64.out.bus_addr()
+        } else if let Some(ctx32) = &self.ctx32 {
+            ctx32.out.bus_addr()
+        } else {
+            panic!("No context available");
+        }
+    }
+
+    pub fn with_empty_input<F>(&mut self, f: F)
+    where
+        F: FnOnce(&mut dyn InputHandler),
+    {
+        if let Some(ctx64) = &mut self.ctx64 {
+            let mut input = Input64Byte::new_64byte();
+            f(&mut input);
+            ctx64.input.write(input);
+        } else if let Some(ctx32) = &mut self.ctx32 {
+            let mut input = Input32Byte::new_32byte();
+            f(&mut input);
+            ctx32.input.write(input);
+        } else {
+            panic!("No context available");
+        }
+    }
+
+    pub fn with_input<F>(&mut self, f: F)
+    where
+        F: FnOnce(&mut dyn InputHandler),
+    {
+        if let Some(ctx64) = &mut self.ctx64 {
+            let mut input = ctx64.input.read();
+            f(&mut input);
+            ctx64.input.write(input);
+        } else if let Some(ctx32) = &mut self.ctx32 {
+            let mut input = ctx32.input.read();
+            f(&mut input);
+            ctx32.input.write(input);
+        } else {
+            panic!("No context available");
+        }
+    }
+
+    pub fn input_bus_addr(&self) -> u64 {
+        if let Some(ctx64) = &self.ctx64 {
+            ctx64.input.bus_addr()
+        } else if let Some(ctx32) = &self.ctx32 {
+            ctx32.input.bus_addr()
+        } else {
+            panic!("No context available");
+        }
+    }
+}
 
 impl DeviceContext {
-    fn new() -> Result<Self> {
-        let out =
-            DBox::zero_with_align(dma_api::Direction::ToDevice, 64).ok_or(USBError::NoMemory)?;
-        let input =
-            DBox::zero_with_align(dma_api::Direction::FromDevice, 64).ok_or(USBError::NoMemory)?;
+    fn new(is_64: bool) -> Result<Self> {
+        let ctx64;
+        let ctx32;
+        if is_64 {
+            ctx64 = Some(Context64 {
+                out: DBox::zero_with_align(dma_api::Direction::FromDevice, 64)
+                    .ok_or(USBError::NoMemory)?,
+                input: DBox::zero_with_align(dma_api::Direction::ToDevice, 64)
+                    .ok_or(USBError::NoMemory)?,
+            });
+            ctx32 = None;
+        } else {
+            ctx32 = Some(Context32 {
+                out: DBox::zero_with_align(dma_api::Direction::FromDevice, 64)
+                    .ok_or(USBError::NoMemory)?,
+                input: DBox::zero_with_align(dma_api::Direction::ToDevice, 64)
+                    .ok_or(USBError::NoMemory)?,
+            });
+            ctx64 = None;
+        }
+
         Ok(Self {
             data: UnsafeCell::new(ContextData {
-                out,
-                input,
+                ctx64,
+                ctx32,
                 transfer_rings: Vec::new(),
             }),
         })
@@ -47,6 +127,13 @@ impl DeviceContext {
         unsafe {
             let data = &*self.data.get();
             &data.transfer_rings[0]
+        }
+    }
+
+    pub fn input_bus_addr(&self) -> u64 {
+        unsafe {
+            let data = &*self.data.get();
+            data.input_bus_addr()
         }
     }
 }
@@ -63,16 +150,16 @@ impl DeviceContextList {
         })
     }
 
-    pub fn new_ctx(&mut self, slot_id: SlotId) -> Result<Arc<DeviceContext>> {
+    pub fn new_ctx(&mut self, slot_id: SlotId, is_64: bool) -> Result<Arc<DeviceContext>> {
         if slot_id.as_usize() > self.max_slots {
             Err(USBError::SlotLimitReached)?;
         }
 
-        let ctx = Arc::new(DeviceContext::new()?);
+        let ctx = Arc::new(DeviceContext::new(is_64)?);
 
         let ctx_mut = unsafe { &mut *ctx.data.get() };
 
-        self.dcbaa.set(slot_id.as_usize(), ctx_mut.out.bus_addr());
+        self.dcbaa.set(slot_id.as_usize(), ctx_mut.dcbaa());
 
         // With control transfer, we need at least one transfer ring
         ctx_mut.transfer_rings = alloc::vec![Ring::new(true, dma_api::Direction::Bidirectional)?];
@@ -90,18 +177,23 @@ pub struct ScratchpadBufferArray {
 
 impl ScratchpadBufferArray {
     pub fn new(entries: usize) -> Result<Self> {
-        let entries =
-            DVec::zeros(entries, 64, dma_api::Direction::ToDevice).ok_or(USBError::NoMemory)?;
+        let mut entries_vec = DVec::zeros(entries, 64, dma_api::Direction::Bidirectional)
+            .ok_or(USBError::NoMemory)?;
 
-        let pages = (0..entries.len())
+        let pages: Vec<DVec<u8>> = (0..entries_vec.len())
             .map(|_| {
-                DVec::<u8>::zeros(0x1000, 0x1000, dma_api::Direction::ToDevice)
+                DVec::<u8>::zeros(0x1000, 0x1000, dma_api::Direction::Bidirectional)
                     .ok_or(USBError::NoMemory)
             })
             .try_collect()?;
 
+        // 将每个页面的地址写入到 entries 数组中
+        for (i, page) in pages.iter().enumerate() {
+            entries_vec.set(i, page.bus_addr());
+        }
+
         Ok(Self {
-            entries,
+            entries: entries_vec,
             _pages: pages,
         })
     }

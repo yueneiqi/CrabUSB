@@ -1,3 +1,7 @@
+use xhci::ring::trb::transfer;
+
+use crate::standard::transfer::Direction;
+
 define_int_type!(SlotId, u8);
 
 impl SlotId {
@@ -21,5 +25,22 @@ impl Dci {
 
     pub fn as_usize(&self) -> usize {
         self.0 as usize
+    }
+}
+
+impl From<Direction> for transfer::TransferType {
+    fn from(value: Direction) -> Self {
+        match value {
+            Direction::In => transfer::TransferType::In,
+            Direction::Out => transfer::TransferType::Out,
+        }
+    }
+}
+impl From<Direction> for transfer::Direction {
+    fn from(value: Direction) -> Self {
+        match value {
+            Direction::In => transfer::Direction::In,
+            Direction::Out => transfer::Direction::Out,
+        }
     }
 }
