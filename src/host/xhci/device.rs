@@ -20,9 +20,8 @@ use crate::{
     standard::{
         descriptors::{
             ConfigurationDescriptor, DESCRIPTOR_LEN_CONFIGURATION, DESCRIPTOR_LEN_DEVICE,
-            DESCRIPTOR_LEN_INTERFACE, DESCRIPTOR_TYPE_CONFIGURATION, DESCRIPTOR_TYPE_DEVICE,
-            DESCRIPTOR_TYPE_INTERFACE, DESCRIPTOR_TYPE_STRING, DeviceDescriptor,
-            InterfaceDescriptor, decode_string_descriptor,
+            DESCRIPTOR_TYPE_CONFIGURATION, DESCRIPTOR_TYPE_DEVICE, DESCRIPTOR_TYPE_STRING,
+            DeviceDescriptor, decode_string_descriptor,
         },
         transfer::{
             Direction,
