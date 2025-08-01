@@ -33,6 +33,25 @@ pub struct EndpointDescriptor {
     pub interval: u8,
 }
 
+impl EndpointDescriptor {
+    pub fn dci(&self) -> u8 {
+        // DCI = (endpoint_number * 2) + direction
+        // Control endpoint always has DCI 1
+        let endpoint_number = self.address & 0x0F; // Extract endpoint number (low 4 bits)
+        (endpoint_number * 2)
+            + match self.transfer_type {
+                EndpointType::Control => 1, // Control endpoint always has DCI 1
+                _ => {
+                    if self.direction == Direction::In {
+                        1
+                    } else {
+                        0
+                    }
+                }
+            }
+    }
+}
+
 impl From<parser::EndpointDescriptor<'_>> for EndpointDescriptor {
     fn from(desc: parser::EndpointDescriptor) -> Self {
         EndpointDescriptor {

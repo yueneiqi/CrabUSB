@@ -405,13 +405,7 @@ impl Device {
         &self.config_desc
     }
 
-    /// 设置设备配置
-    ///
-    /// 这实现了USB规范的SET_CONFIGURATION请求和xHCI的Configure Endpoint命令
-    ///
-    /// # 参数
-    /// * `configuration` - 配置值。0表示取消配置，非零值选择特定配置
-    pub async fn set_configuration(&mut self, config_value: u8) -> Result<(), USBError> {
+    async fn set_configuration(&mut self, config_value: u8) -> Result<(), USBError> {
         trace!("Setting device configuration to {config_value}");
 
         self.control_out(

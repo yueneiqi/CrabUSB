@@ -18,7 +18,10 @@ mod tests {
         println,
     };
     use core::{pin::Pin, time::Duration};
-    use crab_usb::*;
+    use crab_usb::{
+        endpoint::{direction::In, kind::Bulk},
+        *,
+    };
     use futures::FutureExt;
     use log::*;
     use pcie::*;
@@ -68,10 +71,16 @@ mod tests {
                     }
                 }
                 let (interface, alternate) = interface_desc.unwrap();
-                let interface = device.claim_interface(interface, alternate).await.unwrap();
+                let mut interface = device.claim_interface(interface, alternate).await.unwrap();
                 info!("set interface ok");
 
-                
+                let mut bulk_in = interface.endpoint::<Bulk, In>(0x81).unwrap();
+
+                let mut data = alloc::vec![0u8; 64];
+
+                while bulk_in.transfer(&mut data).await.is_ok() {
+                    info!("bulk in data: {data:?}",);
+                }
 
                 drop(device);
             }
