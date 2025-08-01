@@ -42,19 +42,20 @@ use crate::{
     },
 };
 
+struct ContextWrapper(*mut ContextData);
+unsafe impl Send for ContextWrapper {}
+unsafe impl Sync for ContextWrapper {}
+
 pub struct Device {
     id: SlotId,
     root: RootHub,
-    ctx: *mut ContextData,
+    ctx: ContextWrapper,
     wait: WaitMap<TransferEvent>,
     port_id: PortId,
     desc: Option<DeviceDescriptor>,
     current_config_value: Option<u8>,
     config_desc: Vec<Vec<u8>>,
 }
-
-unsafe impl Send for Device {}
-unsafe impl Sync for Device {}
 
 impl IDevice for Device {}
 
@@ -63,7 +64,7 @@ impl Device {
         Self {
             id,
             root: root.clone(),
-            ctx,
+            ctx: ContextWrapper(ctx),
             wait: root.transfer_waiter(),
             port_id,
             desc: None,
@@ -73,11 +74,11 @@ impl Device {
     }
 
     fn ctx(&self) -> &ContextData {
-        unsafe { self.ctx.as_ref().expect("Device context pointer is null") }
+        unsafe { self.ctx.0.as_ref().expect("Device context pointer is null") }
     }
 
     fn ctx_mut(&mut self) -> &mut ContextData {
-        unsafe { self.ctx.as_mut().expect("Device context pointer is null") }
+        unsafe { self.ctx.0.as_mut().expect("Device context pointer is null") }
     }
 
     pub(crate) async fn init(&mut self) -> Result<(), USBError> {
@@ -335,7 +336,7 @@ impl Device {
         F: FnOnce(&mut dyn InputHandler),
     {
         unsafe {
-            let data = &mut *self.ctx;
+            let data = &mut *self.ctx.0;
             data.with_input(f);
         }
     }
@@ -345,7 +346,7 @@ impl Device {
         F: FnOnce(&mut dyn InputHandler),
     {
         unsafe {
-            let data = &mut *self.ctx;
+            let data = &mut *self.ctx.0;
             data.with_empty_input(f);
         }
     }
