@@ -70,4 +70,29 @@ pub trait Controller: Send {
 
 pub trait IDevice: Send {}
 
+pub mod endpoint {
+    pub mod kind {
+        pub struct Bulk;
 
+        impl Sealed for Bulk {}
+
+        pub struct Isochronous;
+
+        impl Sealed for Isochronous {}
+        pub struct Interrupt;
+
+        impl Sealed for Interrupt {}
+
+        pub trait Sealed {}
+    }
+
+    pub mod direction {
+        pub struct In;
+
+        impl Sealed for In {}
+        pub struct Out;
+
+        impl Sealed for Out {}
+        pub trait Sealed {}
+    }
+}

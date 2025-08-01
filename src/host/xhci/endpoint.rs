@@ -1,61 +1,275 @@
-use crate::standard;
+use dma_api::{DSlice, DSliceMut};
+use log::trace;
+use mbarrier::mb;
+use xhci::{
+    registers::doorbell,
+    ring::trb::{
+        event::CompletionCode,
+        transfer::{self, Normal},
+    },
+};
 
-#[allow(unused)]
-pub(crate) struct EndpointDescriptor {
-    pub address: u8,
-    pub max_packet_size: u16,
-    pub direction: standard::transfer::Direction,
-    pub transfer_type: standard::descriptors::TransferType,
-    pub packets_per_microframe: usize,
-    pub interval: u8,
+use crate::{
+    BusAddr,
+    endpoint::{direction, kind},
+    err::USBError,
+    standard::{
+        self,
+        descriptors::{EndpointDescriptor, EndpointType},
+        transfer::Direction,
+    },
+    xhci::{def::Dci, device::DeviceState, ring::Ring},
+};
+
+pub(crate) struct EndpointRaw {
+    dci: Dci,
+    pub ring: Ring,
+    device: DeviceState,
 }
 
-impl From<standard::descriptors::EndpointDescriptor<'_>> for EndpointDescriptor {
-    fn from(desc: standard::descriptors::EndpointDescriptor) -> Self {
-        EndpointDescriptor {
-            address: desc.address(),
-            max_packet_size: desc.max_packet_size() as _,
-            direction: desc.direction(),
-            transfer_type: desc.transfer_type(),
-            packets_per_microframe: desc.packets_per_microframe() as usize,
-            interval: desc.interval(),
+unsafe impl Send for EndpointRaw {}
+
+impl EndpointRaw {
+    pub fn new(dci: Dci, device: &DeviceState) -> Result<Self, USBError> {
+        Ok(Self {
+            dci,
+            ring: Ring::new(true, dma_api::Direction::Bidirectional)?,
+            device: device.clone(),
+        })
+    }
+
+    pub async fn enque(
+        &mut self,
+        trbs: impl Iterator<Item = transfer::Allowed>,
+        direction: Direction,
+        buff_addr: usize,
+        buff_len: usize,
+    ) -> Result<(), USBError> {
+        let mut trb_ptr = BusAddr(0);
+
+        for trb in trbs {
+            trb_ptr = self.ring.enque_transfer(trb);
         }
+
+        trace!("trb : {trb_ptr:#x?}");
+
+        mb();
+
+        let mut bell = doorbell::Register::default();
+        bell.set_doorbell_target(self.dci.into());
+
+        self.device.doorbell(bell);
+
+        let ret = unsafe { self.device.root.try_wait_for_transfer(trb_ptr).unwrap() }.await;
+
+        match ret.completion_code() {
+            Ok(code) => {
+                if !matches!(code, CompletionCode::Success) {
+                    return Err(USBError::TransferEventError(code));
+                }
+            }
+            Err(_e) => return Err(USBError::Unknown),
+        }
+
+        if buff_len > 0 {
+            let data_slice =
+                unsafe { core::slice::from_raw_parts_mut(buff_addr as *mut u8, buff_len) };
+
+            let dm = DSliceMut::from(
+                data_slice,
+                match direction {
+                    Direction::Out => dma_api::Direction::ToDevice,
+                    Direction::In => dma_api::Direction::FromDevice,
+                },
+            );
+            dm.preper_read_all();
+        }
+        Ok(())
+    }
+
+    pub fn bus_addr(&self) -> BusAddr {
+        self.ring.bus_addr()
     }
 }
 
 impl EndpointDescriptor {
     pub fn endpoint_type(&self) -> xhci::context::EndpointType {
         match self.transfer_type {
-            standard::descriptors::TransferType::Control => xhci::context::EndpointType::Control,
-            standard::descriptors::TransferType::Isochronous => match self.direction {
+            standard::descriptors::EndpointType::Control => xhci::context::EndpointType::Control,
+            standard::descriptors::EndpointType::Isochronous => match self.direction {
                 standard::transfer::Direction::Out => xhci::context::EndpointType::IsochOut,
                 standard::transfer::Direction::In => xhci::context::EndpointType::IsochIn,
             },
-            standard::descriptors::TransferType::Bulk => match self.direction {
+            standard::descriptors::EndpointType::Bulk => match self.direction {
                 standard::transfer::Direction::Out => xhci::context::EndpointType::BulkOut,
                 standard::transfer::Direction::In => xhci::context::EndpointType::BulkIn,
             },
-            standard::descriptors::TransferType::Interrupt => match self.direction {
+            standard::descriptors::EndpointType::Interrupt => match self.direction {
                 standard::transfer::Direction::Out => xhci::context::EndpointType::InterruptOut,
                 standard::transfer::Direction::In => xhci::context::EndpointType::InterruptIn,
             },
         }
     }
+}
 
-    pub fn dci(&self) -> u8 {
-        // DCI = (endpoint_number * 2) + direction
-        // Control endpoint always has DCI 1
-        let endpoint_number = self.address & 0x0F; // 提取端点号（低4位）
-        (endpoint_number * 2)
-            + match self.endpoint_type() {
-                xhci::context::EndpointType::Control => 1, // Control endpoint always has DCI 1
-                _ => {
-                    if self.direction == standard::transfer::Direction::In {
-                        1
-                    } else {
-                        0
-                    }
-                }
-            }
+pub struct Endpoint<T: kind::Sealed, D: direction::Sealed> {
+    pub(crate) raw: EndpointRaw,
+    desc: EndpointDescriptor,
+    _marker: core::marker::PhantomData<(T, D)>,
+}
+
+impl<T: kind::Sealed, D: direction::Sealed> Endpoint<T, D> {
+    pub(crate) fn new(desc: EndpointDescriptor, raw: EndpointRaw) -> Result<Self, USBError> {
+        Ok(Self {
+            raw,
+            desc,
+            _marker: core::marker::PhantomData,
+        })
+    }
+}
+
+impl Endpoint<kind::Bulk, direction::In> {
+    pub async fn transfer(&mut self, data: &mut [u8]) -> Result<(), USBError> {
+        if self.desc.direction != Direction::In {
+            return Err(USBError::Unknown);
+        }
+
+        if self.desc.transfer_type != EndpointType::Bulk {
+            return Err(USBError::Unknown);
+        }
+        let len = data.len();
+        let addr_virt = data.as_mut_ptr() as usize;
+        let mut addr_bus = 0;
+
+        if len > 0 {
+            let dm = DSliceMut::from(data, dma_api::Direction::FromDevice);
+            addr_bus = dm.bus_addr();
+        }
+        let trbs = transfer::Allowed::Normal(
+            *Normal::new()
+                .set_data_buffer_pointer(addr_bus as _)
+                .set_trb_transfer_length(len as _)
+                .set_interrupter_target(0)
+                .set_interrupt_on_short_packet()
+                .set_interrupt_on_completion(),
+        );
+        self.raw
+            .enque(
+                [trbs].into_iter(),
+                self.desc.direction,
+                addr_virt,
+                data.len(),
+            )
+            .await
+    }
+}
+
+impl Endpoint<kind::Bulk, direction::Out> {
+    pub async fn transfer(&mut self, data: &[u8]) -> Result<(), USBError> {
+        if self.desc.direction != Direction::Out {
+            return Err(USBError::Unknown);
+        }
+
+        if self.desc.transfer_type != EndpointType::Bulk {
+            return Err(USBError::Unknown);
+        }
+        let len = data.len();
+        let addr_virt = data.as_ptr() as usize;
+        let mut addr_bus = 0;
+
+        if len > 0 {
+            let dm = DSlice::from(data, dma_api::Direction::ToDevice);
+            dm.confirm_write_all();
+            addr_bus = dm.bus_addr();
+        }
+        let trbs = transfer::Allowed::Normal(
+            *Normal::new()
+                .set_data_buffer_pointer(addr_bus as _)
+                .set_trb_transfer_length(len as _)
+                .set_interrupter_target(0)
+                .set_interrupt_on_short_packet()
+                .set_interrupt_on_completion(),
+        );
+        self.raw
+            .enque(
+                [trbs].into_iter(),
+                self.desc.direction,
+                addr_virt,
+                data.len(),
+            )
+            .await
+    }
+}
+
+impl Endpoint<kind::Interrupt, direction::In> {
+    pub async fn transfer(&mut self, data: &mut [u8]) -> Result<(), USBError> {
+        if self.desc.direction != Direction::In {
+            return Err(USBError::Unknown);
+        }
+
+        if self.desc.transfer_type != EndpointType::Interrupt {
+            return Err(USBError::Unknown);
+        }
+        let len = data.len();
+        let addr_virt = data.as_mut_ptr() as usize;
+        let mut addr_bus = 0;
+
+        if len > 0 {
+            let dm = DSliceMut::from(data, dma_api::Direction::FromDevice);
+            addr_bus = dm.bus_addr();
+        }
+        let trbs = transfer::Allowed::Normal(
+            *Normal::new()
+                .set_data_buffer_pointer(addr_bus as _)
+                .set_trb_transfer_length(len as _)
+                .set_interrupter_target(0)
+                .set_interrupt_on_short_packet()
+                .set_interrupt_on_completion(),
+        );
+        self.raw
+            .enque(
+                [trbs].into_iter(),
+                self.desc.direction,
+                addr_virt,
+                data.len(),
+            )
+            .await
+    }
+}
+
+impl Endpoint<kind::Interrupt, direction::Out> {
+    pub async fn transfer(&mut self, data: &[u8]) -> Result<(), USBError> {
+        if self.desc.direction != Direction::Out {
+            return Err(USBError::Unknown);
+        }
+
+        if self.desc.transfer_type != EndpointType::Interrupt {
+            return Err(USBError::Unknown);
+        }
+        let len = data.len();
+        let addr_virt = data.as_ptr() as usize;
+        let mut addr_bus = 0;
+
+        if len > 0 {
+            let dm = DSlice::from(data, dma_api::Direction::ToDevice);
+            dm.confirm_write_all();
+            addr_bus = dm.bus_addr();
+        }
+        let trbs = transfer::Allowed::Normal(
+            *Normal::new()
+                .set_data_buffer_pointer(addr_bus as _)
+                .set_trb_transfer_length(len as _)
+                .set_interrupter_target(0)
+                .set_interrupt_on_short_packet()
+                .set_interrupt_on_completion(),
+        );
+        self.raw
+            .enque(
+                [trbs].into_iter(),
+                self.desc.direction,
+                addr_virt,
+                data.len(),
+            )
+            .await
     }
 }

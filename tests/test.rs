@@ -18,7 +18,10 @@ mod tests {
         println,
     };
     use core::{pin::Pin, time::Duration};
-    use crab_usb::*;
+    use crab_usb::{
+        endpoint::{direction::In, kind::Bulk},
+        *,
+    };
     use futures::FutureExt;
     use log::*;
     use pcie::*;
@@ -52,23 +55,32 @@ mod tests {
                     let product = device.string_descriptor(index, 0).await.unwrap();
                     info!("product: {product}");
                 }
+                let mut interface_desc = None;
+                for config in device.configuration_descriptors() {
+                    info!("config: {:?}", config.configuration_value);
 
-                for config in device.configuration_descriptors().unwrap() {
-                    info!("config: {:?}", config.configuration_value());
-
-                    for interface in config.interfaces() {
-                        info!("interface: {:?}", interface.interface_number());
-                        for alt in interface.alt_settings() {
+                    for interface in &config.interfaces {
+                        info!("interface: {:?}", interface.interface_number);
+                        for alt in &interface.alt_settings {
                             info!("alternate: {alt:?}");
+                            if interface_desc.is_none() {
+                                interface_desc =
+                                    Some((interface.interface_number, alt.alternate_setting));
+                            }
                         }
                     }
                 }
-
-                device.set_configuration(1).await.unwrap();
-                info!("set configuration ok");
-
-                device.set_interface(0, 0).await.unwrap();
+                let (interface, alternate) = interface_desc.unwrap();
+                let mut interface = device.claim_interface(interface, alternate).await.unwrap();
                 info!("set interface ok");
+
+                let mut bulk_in = interface.endpoint::<Bulk, In>(0x81).unwrap();
+
+                let mut data = alloc::vec![0u8; 64];
+
+                while bulk_in.transfer(&mut data).await.is_ok() {
+                    info!("bulk in data: {data:?}",);
+                }
 
                 drop(device);
             }

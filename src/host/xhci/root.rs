@@ -18,7 +18,7 @@ use xhci::{
 };
 
 use crate::{
-    PortId,
+    BusAddr, PortId,
     err::USBError,
     sleep,
     wait::{WaitMap, Waiter},
@@ -407,10 +407,6 @@ impl RootHub {
         }
     }
 
-    pub fn transfer_waiter(&self) -> WaitMap<TransferEvent> {
-        self.lock().wait_transfer.clone()
-    }
-
     pub fn init(&self) -> Result<(), USBError> {
         self.try_lock().unwrap().init()
     }
@@ -449,13 +445,8 @@ impl RootHub {
         }
     }
 
-    pub fn doorbell(&self, slot_id: SlotId, bell: doorbell::Register) {
-        unsafe {
-            self.force_use()
-                .reg
-                .doorbell
-                .write_volatile_at(slot_id.as_usize(), bell);
-        }
+    pub unsafe fn reg(&self) -> XhciRegisters {
+        unsafe { self.force_use().reg.clone() }
     }
 
     async fn device_slot_assignment(&self) -> Result<SlotId, USBError> {
@@ -473,7 +464,7 @@ impl RootHub {
         debug!("New device on port {port_idx}");
         let slot_id = self.device_slot_assignment().await?;
         debug!("Slot {slot_id} assigned");
-        let ctx = {
+        let mut device = {
             let mut root = self.lock();
             let is_64 = root
                 .reg
@@ -486,12 +477,21 @@ impl RootHub {
                 if is_64 { "64-bit" } else { "32-bit" }
             );
             let ctx = root.dev_list.new_ctx(slot_id, is_64)?;
-            root.litsen_transfer(ctx.ctrl_ring());
-            ctx
+            let device = Device::new(slot_id, self, ctx, (port_idx + 1).into())?;
+            root.litsen_transfer(&device.ctrl_ep.ring);
+            device
         };
-        let mut device = Device::new(slot_id, self, ctx, (port_idx + 1).into());
+
         device.init().await?;
         Ok(device)
+    }
+
+    pub(crate) unsafe fn try_wait_for_transfer(
+        &self,
+        addr: BusAddr,
+    ) -> Option<Waiter<TransferEvent>> {
+        let inner = unsafe { self.force_use() };
+        inner.wait_transfer.try_wait_for_result(addr.raw())
     }
 }
 

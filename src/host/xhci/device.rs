@@ -1,40 +1,43 @@
-use core::num::NonZero;
+use core::{
+    num::NonZero,
+    ops::{Deref, DerefMut},
+};
 
-use alloc::{string::String, sync::Arc, vec::Vec};
+use alloc::{collections::btree_map::BTreeMap, string::String, sync::Arc, vec::Vec};
 use dma_api::DSliceMut;
 use log::{debug, trace};
 use mbarrier::mb;
+use spin::Mutex;
 use xhci::{
-    context::InputHandler,
     registers::doorbell,
-    ring::trb::{
-        command,
-        event::{CompletionCode, TransferEvent},
-        transfer,
-    },
+    ring::trb::{command, transfer},
 };
 
 use crate::{
-    BusAddr, IDevice, PortId,
+    IDevice, PortId,
     err::USBError,
     standard::{
         descriptors::{
-            ConfigurationDescriptor, DESCRIPTOR_LEN_CONFIGURATION, DESCRIPTOR_LEN_DEVICE,
-            DESCRIPTOR_TYPE_CONFIGURATION, DESCRIPTOR_TYPE_DEVICE, DESCRIPTOR_TYPE_STRING,
-            DeviceDescriptor, decode_string_descriptor,
+            self, ConfigurationDescriptor, EndpointDescriptor, InterfaceDescriptor,
+            parser::{
+                self, DESCRIPTOR_LEN_CONFIGURATION, DESCRIPTOR_LEN_DEVICE,
+                DESCRIPTOR_TYPE_CONFIGURATION, DESCRIPTOR_TYPE_DEVICE, DESCRIPTOR_TYPE_STRING,
+                DeviceDescriptor, decode_string_descriptor,
+            },
         },
         transfer::{
             Direction,
             control::{Control, ControlRaw, ControlType, Recipient, Request, RequestType},
         },
     },
-    wait::WaitMap,
     xhci::{
         append_port_to_route_string,
-        context::DeviceContext,
+        context::ContextData,
         def::{Dci, SlotId},
-        endpoint, parse_default_max_packet_size_from_port_speed,
-        ring::Ring,
+        endpoint::EndpointRaw,
+        interface::Interface,
+        parse_default_max_packet_size_from_port_speed,
+        reg::XhciRegisters,
         root::RootHub,
     },
 };
@@ -42,12 +45,13 @@ use crate::{
 pub struct Device {
     id: SlotId,
     root: RootHub,
-    ctx: Arc<DeviceContext>,
-    wait: WaitMap<TransferEvent>,
+    ctx: DeviceContext,
     port_id: PortId,
     desc: Option<DeviceDescriptor>,
     current_config_value: Option<u8>,
-    config_desc: Vec<Vec<u8>>,
+    config_desc: Vec<ConfigurationDescriptor>,
+    state: DeviceState,
+    pub(crate) ctrl_ep: EndpointRaw,
 }
 
 impl IDevice for Device {}
@@ -56,19 +60,27 @@ impl Device {
     pub(crate) fn new(
         id: SlotId,
         root: &RootHub,
-        ctx: Arc<DeviceContext>,
+        ctx: *mut ContextData,
         port_id: PortId,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, USBError> {
+        let state = DeviceState::new(id, unsafe { root.reg() }, root.clone());
+        let ctrl_ep = EndpointRaw::new(Dci::CTRL, &state)?;
+
+        Ok(Self {
             id,
             root: root.clone(),
-            ctx,
-            wait: root.transfer_waiter(),
+            ctx: DeviceContext(ctx),
             port_id,
             desc: None,
             current_config_value: None, // 初始化为未配置状态
             config_desc: Default::default(),
-        }
+            state,
+            ctrl_ep,
+        })
+    }
+
+    fn ctx(&self) -> &ContextData {
+        unsafe { self.ctx.0.as_ref().expect("Device context pointer is null") }
     }
 
     pub(crate) async fn init(&mut self) -> Result<(), USBError> {
@@ -83,7 +95,9 @@ impl Device {
         let desc = self.descriptor().await?;
         for i in 0..desc.num_configurations() {
             let config = self.read_configuration_descriptor(i).await?;
-            self.config_desc.push(config);
+            let parsed_config =
+                parser::ConfigurationDescriptor::new(&config).ok_or(USBError::Unknown)?;
+            self.config_desc.push(parsed_config.into());
         }
 
         Ok(())
@@ -94,18 +108,18 @@ impl Device {
         let port_speed = self.root.lock().port_speed(self.port_id);
         let max_packet_size = parse_default_max_packet_size_from_port_speed(port_speed);
 
-        let ctrl_ring_addr = self.ctx.ctrl_ring().bus_addr();
+        let ctrl_ring_addr = self.ctrl_ep.bus_addr();
         // ctrl dci
         let dci = 1;
         trace!(
             "ctrl ring: {ctrl_ring_addr:x?}, port speed: {port_speed}, max packet size: {max_packet_size}"
         );
 
-        let ring_cycle_bit = self.ctx.ctrl_ring().cycle;
+        // let ring_cycle_bit = self.ctrl_ep.cycle;
 
         // 1. Allocate an Input Context data structure (6.2.5) and initialize all fields to
         // ‘0’.
-        self.with_empty_input(|input| {
+        self.ctx.with_empty_input(|input| {
             let control_context = input.control_mut();
             // Initialize the Input Control Context (6.2.5.1) of the Input Context by
             // setting the A0 and A1 flags to ‘1’. These flags indicate that the Slot
@@ -149,11 +163,11 @@ impl Device {
             endpoint_0.set_tr_dequeue_pointer(ctrl_ring_addr.raw());
             // • Dequeue Cycle State (DCS) = 1. Reflects Cycle bit state for valid TRBs written
             //   by software.
-            if ring_cycle_bit {
-                endpoint_0.set_dequeue_cycle_state();
-            } else {
-                endpoint_0.clear_dequeue_cycle_state();
-            }
+            // if ring_cycle_bit {
+            endpoint_0.set_dequeue_cycle_state();
+            // } else {
+            //     endpoint_0.clear_dequeue_cycle_state();
+            // }
             // • Interval = 0.
             endpoint_0.set_interval(0);
             // • Max Primary Streams (MaxPStreams) = 0.
@@ -166,7 +180,7 @@ impl Device {
 
         mb();
 
-        let input_bus_addr = self.ctx.input_bus_addr();
+        let input_bus_addr = self.ctx().input_bus_addr();
         trace!("Input context bus address: {input_bus_addr:#x?}");
         let result = self
             .root
@@ -223,6 +237,8 @@ impl Device {
     async fn control_transfer(&mut self, urb: ControlRaw) -> Result<(), USBError> {
         let mut trbs: Vec<transfer::Allowed> = Vec::new();
         let mut setup = transfer::SetupStage::default();
+        let mut buff_data = 0;
+        let mut buff_len = 0;
 
         setup
             .set_request_type(urb.request_type.clone().into())
@@ -234,6 +250,8 @@ impl Device {
         let mut data = None;
 
         if let Some((addr, len)) = urb.data {
+            buff_data = addr;
+            buff_len = len as usize;
             let data_slice =
                 unsafe { core::slice::from_raw_parts_mut(addr as *mut u8, len as usize) };
 
@@ -269,78 +287,14 @@ impl Device {
         }
         trbs.push(status.into());
 
-        let ring = self.ctrl_ring_mut();
-
-        let mut trb_ptr = BusAddr(0);
-
-        for trb in trbs {
-            trb_ptr = ring.enque_transfer(trb);
-        }
-
-        trace!("trb : {trb_ptr:#x?}");
-
-        mb();
-
-        let mut bell = doorbell::Register::default();
-        bell.set_doorbell_target(Dci::CTRL.raw());
-
-        self.root.doorbell(self.id, bell);
-
-        let ret = self.wait.try_wait_for_result(trb_ptr.raw()).unwrap().await;
-
-        match ret.completion_code() {
-            Ok(code) => {
-                if !matches!(code, CompletionCode::Success) {
-                    return Err(USBError::TransferEventError(code));
-                }
-            }
-            Err(_e) => return Err(USBError::Unknown),
-        }
-
-        if let Some((addr, len)) = urb.data {
-            let data_slice =
-                unsafe { core::slice::from_raw_parts_mut(addr as *mut u8, len as usize) };
-
-            let dm = DSliceMut::from(data_slice, dma_api::Direction::Bidirectional);
-
-            if matches!(urb.request_type.direction, Direction::In) {
-                dm.preper_read_all();
-            }
-        }
-        Ok(())
-    }
-
-    pub(crate) fn ctrl_ring_mut(&mut self) -> &mut Ring {
-        unsafe {
-            let data = &mut *self.ctx.data.get();
-            data.transfer_rings
-                .get_mut(&Dci::CTRL)
-                .expect("Control ring not found")
-        }
-    }
-
-    // pub fn id(&self) -> SlotId {
-    //     self.id
-    // }
-
-    fn with_input<F>(&self, f: F)
-    where
-        F: FnOnce(&mut dyn InputHandler),
-    {
-        unsafe {
-            let data = &mut *self.ctx.data.get();
-            data.with_input(f);
-        }
-    }
-
-    fn with_empty_input<F>(&self, f: F)
-    where
-        F: FnOnce(&mut dyn InputHandler),
-    {
-        unsafe {
-            let data = &mut *self.ctx.data.get();
-            data.with_empty_input(f);
-        }
+        self.ctrl_ep
+            .enque(
+                trbs.into_iter(),
+                urb.request_type.direction,
+                buff_data,
+                buff_len,
+            )
+            .await
     }
 
     async fn control_max_packet_size(&mut self) -> Result<u16, USBError> {
@@ -363,8 +317,8 @@ impl Device {
         Ok(packet_size as _)
     }
 
-    async fn set_ep_packet_size(&self, dci: Dci, max_packet_size: u16) -> Result<(), USBError> {
-        self.with_input(|input| {
+    async fn set_ep_packet_size(&mut self, dci: Dci, max_packet_size: u16) -> Result<(), USBError> {
+        self.ctx.with_input(|input| {
             let endpoint = input.device_mut().endpoint_mut(dci.as_usize());
             endpoint.set_max_packet_size(max_packet_size);
         });
@@ -376,7 +330,7 @@ impl Device {
             .post_cmd(command::Allowed::EvaluateContext(
                 *command::EvaluateContext::default()
                     .set_slot_id(self.id.into())
-                    .set_input_context_pointer(self.ctx.input_bus_addr()),
+                    .set_input_context_pointer(self.ctx().input_bus_addr()),
             ))
             .await?;
 
@@ -447,23 +401,11 @@ impl Device {
         Ok(full_data)
     }
 
-    pub fn configuration_descriptors(
-        &self,
-    ) -> Result<impl Iterator<Item = ConfigurationDescriptor<'_>> + '_, USBError> {
-        let mut out = Vec::with_capacity(self.config_desc.len());
-        for data in &self.config_desc {
-            out.push(ConfigurationDescriptor::new(data).ok_or(USBError::Unknown)?);
-        }
-        Ok(out.into_iter())
+    pub fn configuration_descriptors(&self) -> &[ConfigurationDescriptor] {
+        &self.config_desc
     }
 
-    /// 设置设备配置
-    ///
-    /// 这实现了USB规范的SET_CONFIGURATION请求和xHCI的Configure Endpoint命令
-    ///
-    /// # 参数
-    /// * `configuration` - 配置值。0表示取消配置，非零值选择特定配置
-    pub async fn set_configuration(&mut self, config_value: u8) -> Result<(), USBError> {
+    async fn set_configuration(&mut self, config_value: u8) -> Result<(), USBError> {
         trace!("Setting device configuration to {config_value}");
 
         self.control_out(
@@ -480,7 +422,7 @@ impl Device {
 
         self.current_config_value = Some(config_value);
 
-        self.with_input(|input| {
+        self.ctx.with_input(|input| {
             let c = input.control_mut();
             c.set_configuration_value(config_value);
         });
@@ -492,26 +434,17 @@ impl Device {
     /// 配置端点（为指定配置设置端点上下文）
     async fn configure_endpoints_internal(
         &mut self,
-        endpoints: &[endpoint::EndpointDescriptor],
-    ) -> Result<(), USBError> {
+        endpoints: &[EndpointDescriptor],
+    ) -> Result<BTreeMap<Dci, EndpointRaw>, USBError> {
         trace!("Configuring endpoints for interface");
         let _ = self
             .current_config_value
             .ok_or(USBError::ConfigurationNotSet)?;
-
-        let mut root = self.root.lock();
+        let ar = self.root.clone();
+        let mut root = ar.lock();
         let mut max_dci = 1;
-
-        self.with_input(|input| {
-            let control_context = input.control_mut();
-            for i in 0..32 {
-                control_context.clear_add_context_flag(i);
-                if i > 1 {
-                    control_context.clear_drop_context_flag(i);
-                }
-            }
-            control_context.set_add_context_flag(0);
-        });
+        let mut out: BTreeMap<Dci, EndpointRaw> = Default::default();
+        self.ctx.input_perper_modify();
 
         // 预先计算所有端点的DCI并创建环
         for ep in endpoints {
@@ -520,10 +453,12 @@ impl Device {
                 max_dci = dci;
             }
 
-            let ring = self.ctx.new_ring(dci.into())?;
-            root.litsen_transfer(ring);
-            let ring_addr = ring.bus_addr();
-
+            let ep_raw = EndpointRaw::new(dci.into(), &self.state)?;
+            // let ring = self.ctx_mut().new_ring(dci.into())?;
+            root.litsen_transfer(&ep_raw.ring);
+            // let ring_addr = ring.bus_addr();
+            let ring_addr = ep_raw.bus_addr();
+            out.insert(dci.into(), ep_raw);
             trace!(
                 "Configuring endpoint: DCI {}, Type: {:?}, Max Packet Size: {}, Interval: {}",
                 dci,
@@ -532,7 +467,7 @@ impl Device {
                 ep.interval
             );
 
-            self.with_input(|input| {
+            self.ctx.with_input(|input| {
                 let control_context = input.control_mut();
 
                 control_context.set_add_context_flag(dci as usize);
@@ -552,8 +487,8 @@ impl Device {
                 ep_mut.set_dequeue_cycle_state();
 
                 match ep.transfer_type {
-                    crate::standard::descriptors::TransferType::Isochronous
-                    | crate::standard::descriptors::TransferType::Interrupt => {
+                    descriptors::EndpointType::Isochronous
+                    | descriptors::EndpointType::Interrupt => {
                         //init for isoch/interrupt
                         ep_mut.set_max_packet_size(ep.max_packet_size & 0x7ff); //refer xhci page 162
                         ep_mut.set_max_burst_size(
@@ -565,14 +500,14 @@ impl Device {
                     _ => {}
                 }
 
-                if let crate::standard::descriptors::TransferType::Isochronous = ep.transfer_type {
+                if let descriptors::EndpointType::Isochronous = ep.transfer_type {
                     ep_mut.set_error_count(0);
                 }
             });
         }
         drop(root);
 
-        self.with_input(|input| {
+        self.ctx.with_input(|input| {
             input
                 .device_mut()
                 .slot_mut()
@@ -586,18 +521,22 @@ impl Device {
             .post_cmd(command::Allowed::ConfigureEndpoint(
                 *command::ConfigureEndpoint::default()
                     .set_slot_id(self.id.into())
-                    .set_input_context_pointer(self.ctx.input_bus_addr()),
+                    .set_input_context_pointer(self.ctx().input_bus_addr()),
             ))
             .await?;
 
         debug!("Endpoints configured successfully");
-        Ok(())
+        Ok(out)
     }
 
-    pub async fn set_interface(&mut self, interface: u8, alternate: u8) -> Result<(), USBError> {
+    async fn set_interface(
+        &mut self,
+        interface: u8,
+        alternate: u8,
+    ) -> Result<BTreeMap<Dci, EndpointRaw>, USBError> {
         trace!("Setting interface {interface}, alternate {alternate}");
 
-        self.with_input(|input| {
+        self.ctx.with_input(|input| {
             let c = input.control_mut();
             c.set_interface_number(interface);
             c.set_alternate_setting(alternate);
@@ -618,27 +557,118 @@ impl Device {
 
         let endpoints = self.find_interface_endpoints(interface, alternate)?;
 
-        self.configure_endpoints_internal(&endpoints).await?;
-
-        Ok(())
+        self.configure_endpoints_internal(&endpoints).await
     }
 
     fn find_interface_endpoints(
         &self,
         interface: u8,
         alternate: u8,
-    ) -> Result<Vec<super::endpoint::EndpointDescriptor>, USBError> {
-        for config in self.configuration_descriptors()? {
-            for iface in config.interfaces() {
-                if iface.interface_number() == interface {
-                    for alt in iface.alt_settings() {
-                        if alt.alternate_setting() == alternate {
-                            return Ok(alt.endpoints().map(|ep| ep.into()).collect::<Vec<_>>());
+    ) -> Result<Vec<EndpointDescriptor>, USBError> {
+        for config in self.configuration_descriptors() {
+            for iface in &config.interfaces {
+                if iface.interface_number == interface {
+                    for alt in &iface.alt_settings {
+                        if alt.alternate_setting == alternate {
+                            return Ok(alt.endpoints.clone());
                         }
                     }
                 }
             }
         }
         Err(USBError::NotFound)
+    }
+
+    pub async fn claim_interface(
+        &mut self,
+        interface: u8,
+        alternate: u8,
+    ) -> Result<Interface, USBError> {
+        trace!("Claiming interface {interface}, alternate {alternate}");
+        let config = self.find_interface_config(interface)?;
+        self.set_configuration(config.configuration_value).await?;
+        let ep_map = self.set_interface(interface, alternate).await?;
+        let desc = self.find_interface_desc(interface, alternate)?;
+        let interface = Interface::new(desc, ep_map);
+        Ok(interface)
+    }
+
+    fn find_interface_config(&self, interface: u8) -> Result<&ConfigurationDescriptor, USBError> {
+        for config in &self.config_desc {
+            for iface in &config.interfaces {
+                if iface.interface_number == interface {
+                    return Ok(config);
+                }
+            }
+        }
+        Err(USBError::NotFound)
+    }
+
+    fn find_interface_desc(
+        &self,
+        interface: u8,
+        alternate: u8,
+    ) -> Result<InterfaceDescriptor, USBError> {
+        for config in &self.config_desc {
+            for iface in &config.interfaces {
+                if iface.interface_number == interface {
+                    for alt in &iface.alt_settings {
+                        if alt.alternate_setting == alternate {
+                            return Ok(alt.clone());
+                        }
+                    }
+                }
+            }
+        }
+        Err(USBError::NotFound)
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct DeviceState {
+    id: SlotId,
+    inner: Arc<Mutex<DeviceStateInner>>,
+    pub root: RootHub,
+}
+
+unsafe impl Send for DeviceState {}
+unsafe impl Sync for DeviceState {}
+
+impl DeviceState {
+    pub fn new(id: SlotId, regs: XhciRegisters, root: RootHub) -> Self {
+        Self {
+            id,
+            inner: Arc::new(Mutex::new(DeviceStateInner { regs })),
+            root,
+        }
+    }
+
+    pub fn doorbell(&self, bell: doorbell::Register) {
+        self.inner
+            .lock()
+            .regs
+            .doorbell
+            .write_volatile_at(self.id.as_usize(), bell);
+    }
+}
+
+struct DeviceStateInner {
+    regs: XhciRegisters,
+}
+struct DeviceContext(*mut ContextData);
+unsafe impl Send for DeviceContext {}
+unsafe impl Sync for DeviceContext {}
+
+impl Deref for DeviceContext {
+    type Target = ContextData;
+
+    fn deref(&self) -> &Self::Target {
+        unsafe { self.0.as_ref().expect("Device context pointer is null") }
+    }
+}
+
+impl DerefMut for DeviceContext {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe { self.0.as_mut().expect("Device context pointer is null") }
     }
 }

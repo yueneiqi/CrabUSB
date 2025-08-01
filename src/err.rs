@@ -18,6 +18,8 @@ pub enum USBError {
     NotFound,
     #[error("configuration not set")]
     ConfigurationNotSet,
+    #[error("used by others")]
+    Used,
 }
 
 pub type Result<T = ()> = core::result::Result<T, USBError>;

@@ -15,6 +15,7 @@ mod def;
 mod device;
 mod endpoint;
 mod event;
+mod interface;
 mod reg;
 mod ring;
 mod root;
@@ -260,8 +261,6 @@ impl Xhci {
 
         port_idx_list
     }
-
-
 
     fn root(&self) -> Result<&RootHub> {
         self.root.as_ref().ok_or(USBError::NotInitialized)
