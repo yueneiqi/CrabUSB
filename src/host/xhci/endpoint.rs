@@ -12,7 +12,7 @@ use xhci::{
 use crate::{
     BusAddr,
     err::USBError,
-    standard::{self, descriptors::parser, transfer::Direction},
+    standard::{self, descriptors::EndpointDescriptor, transfer::Direction},
     xhci::{def::Dci, device::DeviceState, ring::Ring},
 };
 
@@ -97,29 +97,6 @@ impl EndpointRaw {
 
     pub fn bus_addr(&self) -> BusAddr {
         self.ring.bus_addr()
-    }
-}
-
-#[allow(unused)]
-pub(crate) struct EndpointDescriptor {
-    pub address: u8,
-    pub max_packet_size: u16,
-    pub direction: standard::transfer::Direction,
-    pub transfer_type: standard::descriptors::EndpointType,
-    pub packets_per_microframe: usize,
-    pub interval: u8,
-}
-
-impl From<parser::EndpointDescriptor<'_>> for EndpointDescriptor {
-    fn from(desc: parser::EndpointDescriptor) -> Self {
-        EndpointDescriptor {
-            address: desc.address(),
-            max_packet_size: desc.max_packet_size() as _,
-            direction: desc.direction(),
-            transfer_type: desc.transfer_type(),
-            packets_per_microframe: desc.packets_per_microframe() as usize,
-            interval: desc.interval(),
-        }
     }
 }
 

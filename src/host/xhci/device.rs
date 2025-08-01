@@ -16,9 +16,9 @@ use crate::{
     err::USBError,
     standard::{
         descriptors::{
-            self,
+            self, ConfigurationDescriptor, EndpointDescriptor,
             parser::{
-                ConfigurationDescriptor, DESCRIPTOR_LEN_CONFIGURATION, DESCRIPTOR_LEN_DEVICE,
+                self, DESCRIPTOR_LEN_CONFIGURATION, DESCRIPTOR_LEN_DEVICE,
                 DESCRIPTOR_TYPE_CONFIGURATION, DESCRIPTOR_TYPE_DEVICE, DESCRIPTOR_TYPE_STRING,
                 DeviceDescriptor, decode_string_descriptor,
             },
@@ -32,7 +32,7 @@ use crate::{
         append_port_to_route_string,
         context::ContextData,
         def::{Dci, SlotId},
-        endpoint::{self, EndpointRaw},
+        endpoint::EndpointRaw,
         parse_default_max_packet_size_from_port_speed,
         reg::XhciRegisters,
         root::RootHub,
@@ -50,7 +50,7 @@ pub struct Device {
     port_id: PortId,
     desc: Option<DeviceDescriptor>,
     current_config_value: Option<u8>,
-    config_desc: Vec<Vec<u8>>,
+    config_desc: Vec<ConfigurationDescriptor>,
     state: DeviceState,
     pub(crate) ctrl_ep: EndpointRaw,
 }
@@ -96,7 +96,9 @@ impl Device {
         let desc = self.descriptor().await?;
         for i in 0..desc.num_configurations() {
             let config = self.read_configuration_descriptor(i).await?;
-            self.config_desc.push(config);
+            let parsed_config =
+                parser::ConfigurationDescriptor::new(&config).ok_or(USBError::Unknown)?;
+            self.config_desc.push(parsed_config.into());
         }
 
         Ok(())
@@ -464,14 +466,8 @@ impl Device {
         Ok(full_data)
     }
 
-    pub fn configuration_descriptors(
-        &self,
-    ) -> Result<impl Iterator<Item = ConfigurationDescriptor<'_>> + '_, USBError> {
-        let mut out = Vec::with_capacity(self.config_desc.len());
-        for data in &self.config_desc {
-            out.push(ConfigurationDescriptor::new(data).ok_or(USBError::Unknown)?);
-        }
-        Ok(out.into_iter())
+    pub fn configuration_descriptors(&self) -> &[ConfigurationDescriptor] {
+        &self.config_desc
     }
 
     /// 设置设备配置
@@ -509,7 +505,7 @@ impl Device {
     /// 配置端点（为指定配置设置端点上下文）
     async fn configure_endpoints_internal(
         &mut self,
-        endpoints: &[endpoint::EndpointDescriptor],
+        endpoints: &[EndpointDescriptor],
     ) -> Result<(), USBError> {
         trace!("Configuring endpoints for interface");
         let _ = self
@@ -646,13 +642,13 @@ impl Device {
         &self,
         interface: u8,
         alternate: u8,
-    ) -> Result<Vec<super::endpoint::EndpointDescriptor>, USBError> {
-        for config in self.configuration_descriptors()? {
-            for iface in config.interfaces() {
-                if iface.interface_number() == interface {
-                    for alt in iface.alt_settings() {
-                        if alt.alternate_setting() == alternate {
-                            return Ok(alt.endpoints().map(|ep| ep.into()).collect::<Vec<_>>());
+    ) -> Result<Vec<EndpointDescriptor>, USBError> {
+        for config in self.configuration_descriptors() {
+            for iface in &config.interfaces {
+                if iface.interface_number == interface {
+                    for alt in &iface.alt_settings {
+                        if alt.alternate_setting == alternate {
+                            return Ok(alt.endpoints.clone());
                         }
                     }
                 }

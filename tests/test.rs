@@ -53,12 +53,12 @@ mod tests {
                     info!("product: {product}");
                 }
 
-                for config in device.configuration_descriptors().unwrap() {
-                    info!("config: {:?}", config.configuration_value());
+                for config in device.configuration_descriptors() {
+                    info!("config: {:?}", config.configuration_value);
 
-                    for interface in config.interfaces() {
-                        info!("interface: {:?}", interface.interface_number());
-                        for alt in interface.alt_settings() {
+                    for interface in &config.interfaces {
+                        info!("interface: {:?}", interface.interface_number);
+                        for alt in &interface.alt_settings {
                             info!("alternate: {alt:?}");
                         }
                     }
