@@ -1,6 +1,6 @@
 use core::num::NonZero;
 
-use alloc::{string::String, sync::Arc, vec::Vec};
+use alloc::{string::String, vec::Vec};
 use dma_api::DSliceMut;
 use log::{debug, trace};
 use mbarrier::mb;
@@ -34,7 +34,7 @@ use crate::{
     wait::WaitMap,
     xhci::{
         append_port_to_route_string,
-        context::DeviceContext,
+        context::ContextData,
         def::{Dci, SlotId},
         endpoint, parse_default_max_packet_size_from_port_speed,
         ring::Ring,
@@ -45,7 +45,7 @@ use crate::{
 pub struct Device {
     id: SlotId,
     root: RootHub,
-    ctx: Arc<DeviceContext>,
+    ctx: *mut ContextData,
     wait: WaitMap<TransferEvent>,
     port_id: PortId,
     desc: Option<DeviceDescriptor>,
@@ -53,21 +53,13 @@ pub struct Device {
     config_desc: Vec<Vec<u8>>,
 }
 
-pub(crate) struct  DeviceState{
-    id: SlotId,
-}
-
-
+unsafe impl Send for Device {}
+unsafe impl Sync for Device {}
 
 impl IDevice for Device {}
 
 impl Device {
-    pub(crate) fn new(
-        id: SlotId,
-        root: &RootHub,
-        ctx: Arc<DeviceContext>,
-        port_id: PortId,
-    ) -> Self {
+    pub(crate) fn new(id: SlotId, root: &RootHub, ctx: *mut ContextData, port_id: PortId) -> Self {
         Self {
             id,
             root: root.clone(),
@@ -78,6 +70,14 @@ impl Device {
             current_config_value: None, // 初始化为未配置状态
             config_desc: Default::default(),
         }
+    }
+
+    fn ctx(&self) -> &ContextData {
+        unsafe { self.ctx.as_ref().expect("Device context pointer is null") }
+    }
+
+    fn ctx_mut(&mut self) -> &mut ContextData {
+        unsafe { self.ctx.as_mut().expect("Device context pointer is null") }
     }
 
     pub(crate) async fn init(&mut self) -> Result<(), USBError> {
@@ -103,14 +103,14 @@ impl Device {
         let port_speed = self.root.lock().port_speed(self.port_id);
         let max_packet_size = parse_default_max_packet_size_from_port_speed(port_speed);
 
-        let ctrl_ring_addr = self.ctx.ctrl_ring().bus_addr();
+        let ctrl_ring_addr = self.ctx().ctrl_ring().bus_addr();
         // ctrl dci
         let dci = 1;
         trace!(
             "ctrl ring: {ctrl_ring_addr:x?}, port speed: {port_speed}, max packet size: {max_packet_size}"
         );
 
-        let ring_cycle_bit = self.ctx.ctrl_ring().cycle;
+        let ring_cycle_bit = self.ctx().ctrl_ring().cycle;
 
         // 1. Allocate an Input Context data structure (6.2.5) and initialize all fields to
         // ‘0’.
@@ -175,7 +175,7 @@ impl Device {
 
         mb();
 
-        let input_bus_addr = self.ctx.input_bus_addr();
+        let input_bus_addr = self.ctx().input_bus_addr();
         trace!("Input context bus address: {input_bus_addr:#x?}");
         let result = self
             .root
@@ -320,12 +320,10 @@ impl Device {
     }
 
     pub(crate) fn ctrl_ring_mut(&mut self) -> &mut Ring {
-        unsafe {
-            let data = &mut *self.ctx.data.get();
-            data.transfer_rings
-                .get_mut(&Dci::CTRL)
-                .expect("Control ring not found")
-        }
+        self.ctx_mut()
+            .transfer_rings
+            .get_mut(&Dci::CTRL)
+            .expect("Control ring not found")
     }
 
     // pub fn id(&self) -> SlotId {
@@ -337,7 +335,7 @@ impl Device {
         F: FnOnce(&mut dyn InputHandler),
     {
         unsafe {
-            let data = &mut *self.ctx.data.get();
+            let data = &mut *self.ctx;
             data.with_input(f);
         }
     }
@@ -347,7 +345,7 @@ impl Device {
         F: FnOnce(&mut dyn InputHandler),
     {
         unsafe {
-            let data = &mut *self.ctx.data.get();
+            let data = &mut *self.ctx;
             data.with_empty_input(f);
         }
     }
@@ -385,7 +383,7 @@ impl Device {
             .post_cmd(command::Allowed::EvaluateContext(
                 *command::EvaluateContext::default()
                     .set_slot_id(self.id.into())
-                    .set_input_context_pointer(self.ctx.input_bus_addr()),
+                    .set_input_context_pointer(self.ctx().input_bus_addr()),
             ))
             .await?;
 
@@ -507,8 +505,8 @@ impl Device {
         let _ = self
             .current_config_value
             .ok_or(USBError::ConfigurationNotSet)?;
-
-        let mut root = self.root.lock();
+        let ar = self.root.clone();
+        let mut root = ar.lock();
         let mut max_dci = 1;
 
         self.with_input(|input| {
@@ -529,7 +527,7 @@ impl Device {
                 max_dci = dci;
             }
 
-            let ring = self.ctx.new_ring(dci.into())?;
+            let ring = self.ctx_mut().new_ring(dci.into())?;
             root.litsen_transfer(ring);
             let ring_addr = ring.bus_addr();
 
@@ -595,7 +593,7 @@ impl Device {
             .post_cmd(command::Allowed::ConfigureEndpoint(
                 *command::ConfigureEndpoint::default()
                     .set_slot_id(self.id.into())
-                    .set_input_context_pointer(self.ctx.input_bus_addr()),
+                    .set_input_context_pointer(self.ctx().input_bus_addr()),
             ))
             .await?;
 

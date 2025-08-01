@@ -486,7 +486,7 @@ impl RootHub {
                 if is_64 { "64-bit" } else { "32-bit" }
             );
             let ctx = root.dev_list.new_ctx(slot_id, is_64)?;
-            root.litsen_transfer(ctx.ctrl_ring());
+            root.litsen_transfer((unsafe { &mut *ctx }).ctrl_ring());
             ctx
         };
         let mut device = Device::new(slot_id, self, ctx, (port_idx + 1).into());

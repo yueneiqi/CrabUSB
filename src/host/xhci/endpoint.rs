@@ -1,10 +1,12 @@
 use alloc::sync::Arc;
 use xhci::ring::trb::event::TransferEvent;
 
-use crate::{standard::{self, descriptors::parser}, wait::WaitMap, xhci::context::DeviceContext};
+use crate::{
+    standard::{self, descriptors::parser},
+    wait::WaitMap,
+};
 
 pub struct Endpoint {
-    ctx: Arc<DeviceContext>,
     wait: WaitMap<TransferEvent>,
 }
 

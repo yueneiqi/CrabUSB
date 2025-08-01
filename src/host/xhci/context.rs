@@ -1,6 +1,4 @@
-use core::cell::UnsafeCell;
-
-use alloc::{collections::btree_map::BTreeMap, sync::Arc, vec::Vec};
+use alloc::{collections::btree_map::BTreeMap, vec::Vec};
 use dma_api::{DBox, DVec};
 use xhci::context::{Device32Byte, Device64Byte, Input32Byte, Input64Byte, InputHandler};
 
@@ -12,7 +10,7 @@ use crate::{
 
 pub struct DeviceContextList {
     pub dcbaa: DVec<u64>,
-    pub ctx_list: Vec<Option<Arc<DeviceContext>>>,
+    pub ctx_list: Vec<Option<ContextData>>,
     max_slots: usize,
 }
 
@@ -32,14 +30,35 @@ pub struct ContextData {
     pub transfer_rings: BTreeMap<Dci, Ring>,
 }
 
-pub struct DeviceContext {
-    pub data: UnsafeCell<ContextData>,
-}
-
-unsafe impl Send for DeviceContext {}
-unsafe impl Sync for DeviceContext {}
-
 impl ContextData {
+    fn new(is_64: bool) -> Result<Self> {
+        let ctx64;
+        let ctx32;
+        if is_64 {
+            ctx64 = Some(Context64 {
+                out: DBox::zero_with_align(dma_api::Direction::FromDevice, 64)
+                    .ok_or(USBError::NoMemory)?,
+                input: DBox::zero_with_align(dma_api::Direction::ToDevice, 64)
+                    .ok_or(USBError::NoMemory)?,
+            });
+            ctx32 = None;
+        } else {
+            ctx32 = Some(Context32 {
+                out: DBox::zero_with_align(dma_api::Direction::FromDevice, 64)
+                    .ok_or(USBError::NoMemory)?,
+                input: DBox::zero_with_align(dma_api::Direction::ToDevice, 64)
+                    .ok_or(USBError::NoMemory)?,
+            });
+            ctx64 = None;
+        }
+
+        Ok(Self {
+            ctx64,
+            ctx32,
+            transfer_rings: Default::default(),
+        })
+    }
+
     pub fn dcbaa(&self) -> u64 {
         if let Some(ctx64) = &self.ctx64 {
             ctx64.out.bus_addr()
@@ -93,60 +112,15 @@ impl ContextData {
             panic!("No context available");
         }
     }
-}
-
-impl DeviceContext {
-    fn new(is_64: bool) -> Result<Self> {
-        let ctx64;
-        let ctx32;
-        if is_64 {
-            ctx64 = Some(Context64 {
-                out: DBox::zero_with_align(dma_api::Direction::FromDevice, 64)
-                    .ok_or(USBError::NoMemory)?,
-                input: DBox::zero_with_align(dma_api::Direction::ToDevice, 64)
-                    .ok_or(USBError::NoMemory)?,
-            });
-            ctx32 = None;
-        } else {
-            ctx32 = Some(Context32 {
-                out: DBox::zero_with_align(dma_api::Direction::FromDevice, 64)
-                    .ok_or(USBError::NoMemory)?,
-                input: DBox::zero_with_align(dma_api::Direction::ToDevice, 64)
-                    .ok_or(USBError::NoMemory)?,
-            });
-            ctx64 = None;
-        }
-
-        Ok(Self {
-            data: UnsafeCell::new(ContextData {
-                ctx64,
-                ctx32,
-                transfer_rings: Default::default(),
-            }),
-        })
-    }
 
     pub fn ctrl_ring(&self) -> &Ring {
-        unsafe {
-            let data = &*self.data.get();
-            &data.transfer_rings[&Dci::CTRL]
-        }
+        &self.transfer_rings[&Dci::CTRL]
     }
 
-    pub fn input_bus_addr(&self) -> u64 {
-        unsafe {
-            let data = &*self.data.get();
-            data.input_bus_addr()
-        }
-    }
-
-    pub fn new_ring(&self, dci: Dci) -> Result<&Ring> {
+    pub fn new_ring(&mut self, dci: Dci) -> Result<&Ring> {
         let ring = Ring::new(true, dma_api::Direction::Bidirectional)?;
-        unsafe {
-            let data = &mut *self.data.get();
-            data.transfer_rings.insert(dci, ring);
-            Ok(&data.transfer_rings[&dci])
-        }
+        self.transfer_rings.insert(dci, ring);
+        Ok(&self.transfer_rings[&dci])
     }
 }
 
@@ -154,34 +128,39 @@ impl DeviceContextList {
     pub fn new(max_slots: usize) -> Result<Self> {
         let dcbaa =
             DVec::zeros(256, 0x1000, dma_api::Direction::ToDevice).ok_or(USBError::NoMemory)?;
+        let mut ctx_list = Vec::with_capacity(max_slots);
+        for _ in 0..max_slots {
+            ctx_list.push(None);
+        }
 
         Ok(Self {
             dcbaa,
-            ctx_list: alloc::vec![ None; max_slots],
+            ctx_list,
             max_slots,
         })
     }
 
-    pub fn new_ctx(&mut self, slot_id: SlotId, is_64: bool) -> Result<Arc<DeviceContext>> {
+    pub fn new_ctx(&mut self, slot_id: SlotId, is_64: bool) -> Result<*mut ContextData> {
         if slot_id.as_usize() > self.max_slots {
             Err(USBError::SlotLimitReached)?;
         }
 
-        let ctx = Arc::new(DeviceContext::new(is_64)?);
+        let mut ctx = ContextData::new(is_64)?;
 
-        let ctx_mut = unsafe { &mut *ctx.data.get() };
-
-        self.dcbaa.set(slot_id.as_usize(), ctx_mut.dcbaa());
+        self.dcbaa.set(slot_id.as_usize(), ctx.dcbaa());
 
         // With control transfer, we need at least one transfer ring
-        ctx_mut.transfer_rings.insert(
+        ctx.transfer_rings.insert(
             Dci::CTRL,
             Ring::new(true, dma_api::Direction::Bidirectional)?,
         );
 
-        self.ctx_list[slot_id.as_usize()] = Some(ctx.clone());
-
-        Ok(ctx)
+        self.ctx_list[slot_id.as_usize()] = Some(ctx);
+        let ctx_ptr = self.ctx_list[slot_id.as_usize()]
+            .as_mut()
+            .map(|c| c as *mut ContextData)
+            .ok_or(USBError::NotFound)?;
+        Ok(ctx_ptr)
     }
 }
 
