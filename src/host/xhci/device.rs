@@ -8,11 +8,11 @@ use spin::Mutex;
 use xhci::{
     context::InputHandler,
     registers::doorbell,
-    ring::trb::{command, event::CompletionCode, transfer},
+    ring::trb::{command, transfer},
 };
 
 use crate::{
-    BusAddr, IDevice, PortId,
+    IDevice, PortId,
     err::USBError,
     standard::{
         descriptors::{
@@ -35,7 +35,6 @@ use crate::{
         endpoint::{self, EndpointRaw},
         parse_default_max_packet_size_from_port_speed,
         reg::XhciRegisters,
-        ring::Ring,
         root::RootHub,
     },
 };
@@ -53,13 +52,22 @@ pub struct Device {
     current_config_value: Option<u8>,
     config_desc: Vec<Vec<u8>>,
     state: DeviceState,
+    pub(crate) ctrl_ep: EndpointRaw,
 }
 
 impl IDevice for Device {}
 
 impl Device {
-    pub(crate) fn new(id: SlotId, root: &RootHub, ctx: *mut ContextData, port_id: PortId) -> Self {
-        Self {
+    pub(crate) fn new(
+        id: SlotId,
+        root: &RootHub,
+        ctx: *mut ContextData,
+        port_id: PortId,
+    ) -> Result<Self, USBError> {
+        let state = DeviceState::new(id, unsafe { root.reg() }, root.clone());
+        let ctrl_ep = EndpointRaw::new(Dci::CTRL, &state)?;
+
+        Ok(Self {
             id,
             root: root.clone(),
             ctx: ContextWrapper(ctx),
@@ -67,16 +75,13 @@ impl Device {
             desc: None,
             current_config_value: None, // 初始化为未配置状态
             config_desc: Default::default(),
-            state: DeviceState::new(id, unsafe { root.reg() }, root.clone()),
-        }
+            state,
+            ctrl_ep,
+        })
     }
 
     fn ctx(&self) -> &ContextData {
         unsafe { self.ctx.0.as_ref().expect("Device context pointer is null") }
-    }
-
-    fn ctx_mut(&mut self) -> &mut ContextData {
-        unsafe { self.ctx.0.as_mut().expect("Device context pointer is null") }
     }
 
     pub(crate) async fn init(&mut self) -> Result<(), USBError> {
@@ -102,14 +107,14 @@ impl Device {
         let port_speed = self.root.lock().port_speed(self.port_id);
         let max_packet_size = parse_default_max_packet_size_from_port_speed(port_speed);
 
-        let ctrl_ring_addr = self.ctx().ctrl_ring().bus_addr();
+        let ctrl_ring_addr = self.ctrl_ep.bus_addr();
         // ctrl dci
         let dci = 1;
         trace!(
             "ctrl ring: {ctrl_ring_addr:x?}, port speed: {port_speed}, max packet size: {max_packet_size}"
         );
 
-        let ring_cycle_bit = self.ctx().ctrl_ring().cycle;
+        // let ring_cycle_bit = self.ctrl_ep.cycle;
 
         // 1. Allocate an Input Context data structure (6.2.5) and initialize all fields to
         // ‘0’.
@@ -157,11 +162,11 @@ impl Device {
             endpoint_0.set_tr_dequeue_pointer(ctrl_ring_addr.raw());
             // • Dequeue Cycle State (DCS) = 1. Reflects Cycle bit state for valid TRBs written
             //   by software.
-            if ring_cycle_bit {
-                endpoint_0.set_dequeue_cycle_state();
-            } else {
-                endpoint_0.clear_dequeue_cycle_state();
-            }
+            // if ring_cycle_bit {
+            endpoint_0.set_dequeue_cycle_state();
+            // } else {
+            //     endpoint_0.clear_dequeue_cycle_state();
+            // }
             // • Interval = 0.
             endpoint_0.set_interval(0);
             // • Max Primary Streams (MaxPStreams) = 0.
@@ -231,6 +236,8 @@ impl Device {
     async fn control_transfer(&mut self, urb: ControlRaw) -> Result<(), USBError> {
         let mut trbs: Vec<transfer::Allowed> = Vec::new();
         let mut setup = transfer::SetupStage::default();
+        let mut buff_data = 0;
+        let mut buff_len = 0;
 
         setup
             .set_request_type(urb.request_type.clone().into())
@@ -242,6 +249,8 @@ impl Device {
         let mut data = None;
 
         if let Some((addr, len)) = urb.data {
+            buff_data = addr;
+            buff_len = len as usize;
             let data_slice =
                 unsafe { core::slice::from_raw_parts_mut(addr as *mut u8, len as usize) };
 
@@ -277,52 +286,54 @@ impl Device {
         }
         trbs.push(status.into());
 
-        let ring = self.ctrl_ring_mut();
+        self.ctrl_ep
+            .enque(
+                trbs.into_iter(),
+                urb.request_type.direction,
+                buff_data,
+                buff_len,
+            )
+            .await?;
 
-        let mut trb_ptr = BusAddr(0);
+        // let ring = self.ctrl_ring_mut();
 
-        for trb in trbs {
-            trb_ptr = ring.enque_transfer(trb);
-        }
+        // let mut trb_ptr = BusAddr(0);
 
-        trace!("trb : {trb_ptr:#x?}");
+        // for trb in trbs {
+        //     trb_ptr = ring.enque_transfer(trb);
+        // }
 
-        mb();
+        // trace!("trb : {trb_ptr:#x?}");
 
-        let mut bell = doorbell::Register::default();
-        bell.set_doorbell_target(Dci::CTRL.raw());
+        // mb();
 
-        self.root.doorbell(self.id, bell);
+        // let mut bell = doorbell::Register::default();
+        // bell.set_doorbell_target(Dci::CTRL.raw());
 
-        let ret = unsafe { self.root.try_wait_for_transfer(trb_ptr).unwrap() }.await;
+        // self.root.doorbell(self.id, bell);
 
-        match ret.completion_code() {
-            Ok(code) => {
-                if !matches!(code, CompletionCode::Success) {
-                    return Err(USBError::TransferEventError(code));
-                }
-            }
-            Err(_e) => return Err(USBError::Unknown),
-        }
+        // let ret = unsafe { self.root.try_wait_for_transfer(trb_ptr).unwrap() }.await;
 
-        if let Some((addr, len)) = urb.data {
-            let data_slice =
-                unsafe { core::slice::from_raw_parts_mut(addr as *mut u8, len as usize) };
+        // match ret.completion_code() {
+        //     Ok(code) => {
+        //         if !matches!(code, CompletionCode::Success) {
+        //             return Err(USBError::TransferEventError(code));
+        //         }
+        //     }
+        //     Err(_e) => return Err(USBError::Unknown),
+        // }
 
-            let dm = DSliceMut::from(data_slice, dma_api::Direction::Bidirectional);
+        // if let Some((addr, len)) = urb.data {
+        //     let data_slice =
+        //         unsafe { core::slice::from_raw_parts_mut(addr as *mut u8, len as usize) };
 
-            if matches!(urb.request_type.direction, Direction::In) {
-                dm.preper_read_all();
-            }
-        }
+        //     let dm = DSliceMut::from(data_slice, dma_api::Direction::Bidirectional);
+
+        //     if matches!(urb.request_type.direction, Direction::In) {
+        //         dm.preper_read_all();
+        //     }
+        // }
         Ok(())
-    }
-
-    pub(crate) fn ctrl_ring_mut(&mut self) -> &mut Ring {
-        self.ctx_mut()
-            .transfer_rings
-            .get_mut(&Dci::CTRL)
-            .expect("Control ring not found")
     }
 
     // pub fn id(&self) -> SlotId {
@@ -369,7 +380,7 @@ impl Device {
         Ok(packet_size as _)
     }
 
-    async fn set_ep_packet_size(&self, dci: Dci, max_packet_size: u16) -> Result<(), USBError> {
+    async fn set_ep_packet_size(&mut self, dci: Dci, max_packet_size: u16) -> Result<(), USBError> {
         self.with_input(|input| {
             let endpoint = input.device_mut().endpoint_mut(dci.as_usize());
             endpoint.set_max_packet_size(max_packet_size);
@@ -526,9 +537,11 @@ impl Device {
                 max_dci = dci;
             }
 
-            let ring = self.ctx_mut().new_ring(dci.into())?;
-            root.litsen_transfer(ring);
-            let ring_addr = ring.bus_addr();
+            let ep_raw = EndpointRaw::new(dci.into(), &self.state)?;
+            // let ring = self.ctx_mut().new_ring(dci.into())?;
+            root.litsen_transfer(&ep_raw.ring);
+            // let ring_addr = ring.bus_addr();
+            let ring_addr = ep_raw.bus_addr();
 
             trace!(
                 "Configuring endpoint: DCI {}, Type: {:?}, Max Packet Size: {}, Interval: {}",
@@ -656,6 +669,9 @@ pub(crate) struct DeviceState {
     pub root: RootHub,
 }
 
+unsafe impl Send for DeviceState {}
+unsafe impl Sync for DeviceState {}
+
 impl DeviceState {
     pub fn new(id: SlotId, regs: XhciRegisters, root: RootHub) -> Self {
         Self {
@@ -663,10 +679,6 @@ impl DeviceState {
             inner: Arc::new(Mutex::new(DeviceStateInner { regs })),
             root,
         }
-    }
-
-    pub fn id(&self) -> SlotId {
-        self.id
     }
 
     pub fn doorbell(&self, bell: doorbell::Register) {
@@ -677,9 +689,6 @@ impl DeviceState {
             .write_volatile_at(self.id.as_usize(), bell);
     }
 }
-
-unsafe impl Send for DeviceState {}
-unsafe impl Sync for DeviceState {}
 
 struct DeviceStateInner {
     regs: XhciRegisters,

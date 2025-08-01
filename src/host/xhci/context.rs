@@ -1,12 +1,8 @@
-use alloc::{collections::btree_map::BTreeMap, vec::Vec};
+use alloc::vec::Vec;
 use dma_api::{DBox, DVec};
 use xhci::context::{Device32Byte, Device64Byte, Input32Byte, Input64Byte, InputHandler};
 
-use super::ring::Ring;
-use crate::{
-    err::*,
-    xhci::{SlotId, def::Dci},
-};
+use crate::{err::*, xhci::SlotId};
 
 pub struct DeviceContextList {
     pub dcbaa: DVec<u64>,
@@ -27,7 +23,6 @@ struct Context64 {
 pub struct ContextData {
     ctx64: Option<Context64>,
     ctx32: Option<Context32>,
-    pub transfer_rings: BTreeMap<Dci, Ring>,
 }
 
 impl ContextData {
@@ -52,11 +47,7 @@ impl ContextData {
             ctx64 = None;
         }
 
-        Ok(Self {
-            ctx64,
-            ctx32,
-            transfer_rings: Default::default(),
-        })
+        Ok(Self { ctx64, ctx32 })
     }
 
     pub fn dcbaa(&self) -> u64 {
@@ -112,22 +103,6 @@ impl ContextData {
             panic!("No context available");
         }
     }
-
-    pub fn ctrl_ring(&self) -> &Ring {
-        &self.transfer_rings[&Dci::CTRL]
-    }
-
-    pub fn new_ring(&mut self, dci: Dci) -> Result<&Ring> {
-        let ring = Ring::new(true, dma_api::Direction::Bidirectional)?;
-        self.transfer_rings.insert(dci, ring);
-        Ok(&self.transfer_rings[&dci])
-    }
-
-    pub fn get_ring(&self, dci: Dci) -> Option<*mut Ring> {
-        self.transfer_rings
-            .get(&dci)
-            .map(|r| r as *const Ring as *mut Ring)
-    }
 }
 
 impl DeviceContextList {
@@ -150,17 +125,8 @@ impl DeviceContextList {
         if slot_id.as_usize() > self.max_slots {
             Err(USBError::SlotLimitReached)?;
         }
-
-        let mut ctx = ContextData::new(is_64)?;
-
+        let ctx = ContextData::new(is_64)?;
         self.dcbaa.set(slot_id.as_usize(), ctx.dcbaa());
-
-        // With control transfer, we need at least one transfer ring
-        ctx.transfer_rings.insert(
-            Dci::CTRL,
-            Ring::new(true, dma_api::Direction::Bidirectional)?,
-        );
-
         self.ctx_list[slot_id.as_usize()] = Some(ctx);
         let ctx_ptr = self.ctx_list[slot_id.as_usize()]
             .as_mut()

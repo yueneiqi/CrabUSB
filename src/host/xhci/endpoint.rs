@@ -5,22 +5,24 @@ use xhci::{
     registers::doorbell,
     ring::trb::{
         event::CompletionCode,
-        transfer::{self, Direction},
+        transfer::{self},
     },
 };
 
 use crate::{
     BusAddr,
     err::USBError,
-    standard::{self, descriptors::parser},
+    standard::{self, descriptors::parser, transfer::Direction},
     xhci::{def::Dci, device::DeviceState, ring::Ring},
 };
 
 pub(crate) struct EndpointRaw {
     dci: Dci,
-    ring: Ring,
+    pub ring: Ring,
     device: DeviceState,
 }
+
+unsafe impl Send for EndpointRaw {}
 
 impl EndpointRaw {
     pub fn new(dci: Dci, device: &DeviceState) -> Result<Self, USBError> {
@@ -91,6 +93,10 @@ impl EndpointRaw {
             dm.preper_read_all();
         }
         Ok(())
+    }
+
+    pub fn bus_addr(&self) -> BusAddr {
+        self.ring.bus_addr()
     }
 }
 
