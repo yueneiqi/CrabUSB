@@ -19,9 +19,12 @@ use crate::{
     err::USBError,
     standard::{
         descriptors::{
-            ConfigurationDescriptor, DESCRIPTOR_LEN_CONFIGURATION, DESCRIPTOR_LEN_DEVICE,
-            DESCRIPTOR_TYPE_CONFIGURATION, DESCRIPTOR_TYPE_DEVICE, DESCRIPTOR_TYPE_STRING,
-            DeviceDescriptor, decode_string_descriptor,
+            self,
+            parser::{
+                ConfigurationDescriptor, DESCRIPTOR_LEN_CONFIGURATION, DESCRIPTOR_LEN_DEVICE,
+                DESCRIPTOR_TYPE_CONFIGURATION, DESCRIPTOR_TYPE_DEVICE, DESCRIPTOR_TYPE_STRING,
+                DeviceDescriptor, decode_string_descriptor,
+            },
         },
         transfer::{
             Direction,
@@ -49,6 +52,12 @@ pub struct Device {
     current_config_value: Option<u8>,
     config_desc: Vec<Vec<u8>>,
 }
+
+pub(crate) struct  DeviceState{
+    id: SlotId,
+}
+
+
 
 impl IDevice for Device {}
 
@@ -552,8 +561,8 @@ impl Device {
                 ep_mut.set_dequeue_cycle_state();
 
                 match ep.transfer_type {
-                    crate::standard::descriptors::TransferType::Isochronous
-                    | crate::standard::descriptors::TransferType::Interrupt => {
+                    descriptors::EndpointType::Isochronous
+                    | descriptors::EndpointType::Interrupt => {
                         //init for isoch/interrupt
                         ep_mut.set_max_packet_size(ep.max_packet_size & 0x7ff); //refer xhci page 162
                         ep_mut.set_max_burst_size(
@@ -565,7 +574,7 @@ impl Device {
                     _ => {}
                 }
 
-                if let crate::standard::descriptors::TransferType::Isochronous = ep.transfer_type {
+                if let descriptors::EndpointType::Isochronous = ep.transfer_type {
                     ep_mut.set_error_count(0);
                 }
             });
