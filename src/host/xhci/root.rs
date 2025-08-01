@@ -18,7 +18,7 @@ use xhci::{
 };
 
 use crate::{
-    PortId,
+    BusAddr, PortId,
     err::USBError,
     sleep,
     wait::{WaitMap, Waiter},
@@ -458,6 +458,10 @@ impl RootHub {
         }
     }
 
+    pub unsafe fn reg(&self) -> XhciRegisters {
+        unsafe { self.force_use().reg.clone() }
+    }
+
     async fn device_slot_assignment(&self) -> Result<SlotId, USBError> {
         // enable slot
         let result = self
@@ -492,6 +496,14 @@ impl RootHub {
         let mut device = Device::new(slot_id, self, ctx, (port_idx + 1).into());
         device.init().await?;
         Ok(device)
+    }
+
+    pub(crate) unsafe fn try_wait_for_transfer(
+        &self,
+        addr: BusAddr,
+    ) -> Option<Waiter<TransferEvent>> {
+        let inner = unsafe { self.force_use() };
+        inner.wait_transfer.try_wait_for_result(addr.raw())
     }
 }
 

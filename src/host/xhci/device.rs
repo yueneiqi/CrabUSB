@@ -1,17 +1,14 @@
 use core::num::NonZero;
 
-use alloc::{string::String, vec::Vec};
+use alloc::{string::String, sync::Arc, vec::Vec};
 use dma_api::DSliceMut;
 use log::{debug, trace};
 use mbarrier::mb;
+use spin::Mutex;
 use xhci::{
     context::InputHandler,
     registers::doorbell,
-    ring::trb::{
-        command,
-        event::{CompletionCode, TransferEvent},
-        transfer,
-    },
+    ring::trb::{command, event::CompletionCode, transfer},
 };
 
 use crate::{
@@ -31,12 +28,13 @@ use crate::{
             control::{Control, ControlRaw, ControlType, Recipient, Request, RequestType},
         },
     },
-    wait::WaitMap,
     xhci::{
         append_port_to_route_string,
         context::ContextData,
         def::{Dci, SlotId},
-        endpoint, parse_default_max_packet_size_from_port_speed,
+        endpoint::{self, EndpointRaw},
+        parse_default_max_packet_size_from_port_speed,
+        reg::XhciRegisters,
         ring::Ring,
         root::RootHub,
     },
@@ -50,11 +48,11 @@ pub struct Device {
     id: SlotId,
     root: RootHub,
     ctx: ContextWrapper,
-    wait: WaitMap<TransferEvent>,
     port_id: PortId,
     desc: Option<DeviceDescriptor>,
     current_config_value: Option<u8>,
     config_desc: Vec<Vec<u8>>,
+    state: DeviceState,
 }
 
 impl IDevice for Device {}
@@ -65,11 +63,11 @@ impl Device {
             id,
             root: root.clone(),
             ctx: ContextWrapper(ctx),
-            wait: root.transfer_waiter(),
             port_id,
             desc: None,
             current_config_value: None, // 初始化为未配置状态
             config_desc: Default::default(),
+            state: DeviceState::new(id, unsafe { root.reg() }, root.clone()),
         }
     }
 
@@ -296,7 +294,7 @@ impl Device {
 
         self.root.doorbell(self.id, bell);
 
-        let ret = self.wait.try_wait_for_result(trb_ptr.raw()).unwrap().await;
+        let ret = unsafe { self.root.try_wait_for_transfer(trb_ptr).unwrap() }.await;
 
         match ret.completion_code() {
             Ok(code) => {
@@ -325,6 +323,13 @@ impl Device {
             .transfer_rings
             .get_mut(&Dci::CTRL)
             .expect("Control ring not found")
+    }
+
+    fn get_endpoint_raw(&self, dci: Dci) -> EndpointRaw {
+        self.ctx()
+            .get_ring(dci)
+            .map(|r| EndpointRaw::new(dci, r, &self.state))
+            .expect("Endpoint raw not found")
     }
 
     // pub fn id(&self) -> SlotId {
@@ -649,4 +654,40 @@ impl Device {
         }
         Err(USBError::NotFound)
     }
+}
+
+#[derive(Clone)]
+pub(crate) struct DeviceState {
+    id: SlotId,
+    inner: Arc<Mutex<DeviceStateInner>>,
+    pub root: RootHub,
+}
+
+impl DeviceState {
+    pub fn new(id: SlotId, regs: XhciRegisters, root: RootHub) -> Self {
+        Self {
+            id,
+            inner: Arc::new(Mutex::new(DeviceStateInner { regs })),
+            root,
+        }
+    }
+
+    pub fn id(&self) -> SlotId {
+        self.id
+    }
+
+    pub fn doorbell(&self, bell: doorbell::Register) {
+        self.inner
+            .lock()
+            .regs
+            .doorbell
+            .write_volatile_at(self.id.as_usize(), bell);
+    }
+}
+
+unsafe impl Send for DeviceState {}
+unsafe impl Sync for DeviceState {}
+
+struct DeviceStateInner {
+    regs: XhciRegisters,
 }

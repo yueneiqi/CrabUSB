@@ -1,13 +1,105 @@
-use alloc::sync::Arc;
-use xhci::ring::trb::event::TransferEvent;
-
-use crate::{
-    standard::{self, descriptors::parser},
-    wait::WaitMap,
+use dma_api::DSliceMut;
+use log::trace;
+use mbarrier::mb;
+use xhci::{
+    registers::doorbell,
+    ring::trb::{
+        event::{CompletionCode, TransferEvent},
+        transfer::{self, Direction},
+    },
 };
 
-pub struct Endpoint {
-    wait: WaitMap<TransferEvent>,
+use crate::{
+    BusAddr,
+    err::USBError,
+    standard::{self, descriptors::parser},
+    xhci::{def::Dci, device::DeviceState, ring::Ring},
+};
+
+struct RingWarper(*mut Ring);
+unsafe impl Send for RingWarper {}
+unsafe impl Sync for RingWarper {}
+
+pub(crate) struct EndpointRaw {
+    dci: Dci,
+    ring: RingWarper,
+    device: DeviceState,
+}
+
+impl EndpointRaw {
+    pub fn new(dci: Dci, ring: *mut Ring, device: &DeviceState) -> Self {
+        Self {
+            dci,
+            ring: RingWarper(ring),
+            device: device.clone(),
+        }
+    }
+
+    pub fn ring(&mut self) -> &mut Ring {
+        unsafe { &mut *self.ring.0 }
+    }
+
+    pub async fn enque(
+        &mut self,
+        trbs: impl Iterator<Item = transfer::Allowed>,
+        direction: Direction,
+        buff_addr: usize,
+        buff_len: usize,
+    ) -> Result<(), USBError> {
+        if buff_len > 0 {
+            let data_slice =
+                unsafe { core::slice::from_raw_parts_mut(buff_addr as *mut u8, buff_len) };
+            let dm = DSliceMut::from(
+                data_slice,
+                match direction {
+                    Direction::Out => dma_api::Direction::ToDevice,
+                    Direction::In => dma_api::Direction::FromDevice,
+                },
+            );
+            dm.confirm_write_all();
+        }
+
+        let mut trb_ptr = BusAddr(0);
+
+        for trb in trbs {
+            trb_ptr = self.ring().enque_transfer(trb);
+        }
+
+        trace!("trb : {trb_ptr:#x?}");
+
+        mb();
+
+        let mut bell = doorbell::Register::default();
+        bell.set_doorbell_target(self.dci.into());
+
+        self.device.doorbell(bell);
+
+        let ret = unsafe { self.device.root.try_wait_for_transfer(trb_ptr).unwrap() }.await;
+
+        match ret.completion_code() {
+            Ok(code) => {
+                if !matches!(code, CompletionCode::Success) {
+                    return Err(USBError::TransferEventError(code));
+                }
+            }
+            Err(_e) => return Err(USBError::Unknown),
+        }
+
+        if buff_len > 0 {
+            let data_slice =
+                unsafe { core::slice::from_raw_parts_mut(buff_addr as *mut u8, buff_len) };
+
+            let dm = DSliceMut::from(
+                data_slice,
+                match direction {
+                    Direction::Out => dma_api::Direction::ToDevice,
+                    Direction::In => dma_api::Direction::FromDevice,
+                },
+            );
+            dm.preper_read_all();
+        }
+        Ok(())
+    }
 }
 
 #[allow(unused)]

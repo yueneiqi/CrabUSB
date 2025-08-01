@@ -122,6 +122,12 @@ impl ContextData {
         self.transfer_rings.insert(dci, ring);
         Ok(&self.transfer_rings[&dci])
     }
+
+    pub fn get_ring(&self, dci: Dci) -> Option<*mut Ring> {
+        self.transfer_rings
+            .get(&dci)
+            .map(|r| r as *const Ring as *mut Ring)
+    }
 }
 
 impl DeviceContextList {
