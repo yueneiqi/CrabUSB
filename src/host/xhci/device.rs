@@ -1,4 +1,7 @@
-use core::num::NonZero;
+use core::{
+    num::NonZero,
+    ops::{Deref, DerefMut},
+};
 
 use alloc::{string::String, sync::Arc, vec::Vec};
 use dma_api::DSliceMut;
@@ -6,7 +9,6 @@ use log::{debug, trace};
 use mbarrier::mb;
 use spin::Mutex;
 use xhci::{
-    context::InputHandler,
     registers::doorbell,
     ring::trb::{command, transfer},
 };
@@ -39,14 +41,10 @@ use crate::{
     },
 };
 
-struct ContextWrapper(*mut ContextData);
-unsafe impl Send for ContextWrapper {}
-unsafe impl Sync for ContextWrapper {}
-
 pub struct Device {
     id: SlotId,
     root: RootHub,
-    ctx: ContextWrapper,
+    ctx: DeviceContext,
     port_id: PortId,
     desc: Option<DeviceDescriptor>,
     current_config_value: Option<u8>,
@@ -70,7 +68,7 @@ impl Device {
         Ok(Self {
             id,
             root: root.clone(),
-            ctx: ContextWrapper(ctx),
+            ctx: DeviceContext(ctx),
             port_id,
             desc: None,
             current_config_value: None, // 初始化为未配置状态
@@ -120,7 +118,7 @@ impl Device {
 
         // 1. Allocate an Input Context data structure (6.2.5) and initialize all fields to
         // ‘0’.
-        self.with_empty_input(|input| {
+        self.ctx.with_empty_input(|input| {
             let control_context = input.control_mut();
             // Initialize the Input Control Context (6.2.5.1) of the Input Context by
             // setting the A0 and A1 flags to ‘1’. These flags indicate that the Slot
@@ -295,78 +293,7 @@ impl Device {
                 buff_data,
                 buff_len,
             )
-            .await?;
-
-        // let ring = self.ctrl_ring_mut();
-
-        // let mut trb_ptr = BusAddr(0);
-
-        // for trb in trbs {
-        //     trb_ptr = ring.enque_transfer(trb);
-        // }
-
-        // trace!("trb : {trb_ptr:#x?}");
-
-        // mb();
-
-        // let mut bell = doorbell::Register::default();
-        // bell.set_doorbell_target(Dci::CTRL.raw());
-
-        // self.root.doorbell(self.id, bell);
-
-        // let ret = unsafe { self.root.try_wait_for_transfer(trb_ptr).unwrap() }.await;
-
-        // match ret.completion_code() {
-        //     Ok(code) => {
-        //         if !matches!(code, CompletionCode::Success) {
-        //             return Err(USBError::TransferEventError(code));
-        //         }
-        //     }
-        //     Err(_e) => return Err(USBError::Unknown),
-        // }
-
-        // if let Some((addr, len)) = urb.data {
-        //     let data_slice =
-        //         unsafe { core::slice::from_raw_parts_mut(addr as *mut u8, len as usize) };
-
-        //     let dm = DSliceMut::from(data_slice, dma_api::Direction::Bidirectional);
-
-        //     if matches!(urb.request_type.direction, Direction::In) {
-        //         dm.preper_read_all();
-        //     }
-        // }
-        Ok(())
-    }
-
-    // pub fn id(&self) -> SlotId {
-    //     self.id
-    // }
-
-    fn with_input<F>(&self, f: F)
-    where
-        F: FnOnce(&mut dyn InputHandler),
-    {
-        unsafe {
-            let data = &mut *self.ctx.0;
-            data.with_input(f);
-        }
-    }
-
-    fn input_perper_modify(&self) {
-        unsafe {
-            let data = &mut *self.ctx.0;
-            data.input_perper_modify();
-        }
-    }
-
-    fn with_empty_input<F>(&self, f: F)
-    where
-        F: FnOnce(&mut dyn InputHandler),
-    {
-        unsafe {
-            let data = &mut *self.ctx.0;
-            data.with_empty_input(f);
-        }
+            .await
     }
 
     async fn control_max_packet_size(&mut self) -> Result<u16, USBError> {
@@ -390,7 +317,7 @@ impl Device {
     }
 
     async fn set_ep_packet_size(&mut self, dci: Dci, max_packet_size: u16) -> Result<(), USBError> {
-        self.with_input(|input| {
+        self.ctx.with_input(|input| {
             let endpoint = input.device_mut().endpoint_mut(dci.as_usize());
             endpoint.set_max_packet_size(max_packet_size);
         });
@@ -500,7 +427,7 @@ impl Device {
 
         self.current_config_value = Some(config_value);
 
-        self.with_input(|input| {
+        self.ctx.with_input(|input| {
             let c = input.control_mut();
             c.set_configuration_value(config_value);
         });
@@ -522,7 +449,7 @@ impl Device {
         let mut root = ar.lock();
         let mut max_dci = 1;
 
-        self.input_perper_modify();
+        self.ctx.input_perper_modify();
 
         // 预先计算所有端点的DCI并创建环
         for ep in endpoints {
@@ -545,7 +472,7 @@ impl Device {
                 ep.interval
             );
 
-            self.with_input(|input| {
+            self.ctx.with_input(|input| {
                 let control_context = input.control_mut();
 
                 control_context.set_add_context_flag(dci as usize);
@@ -585,7 +512,7 @@ impl Device {
         }
         drop(root);
 
-        self.with_input(|input| {
+        self.ctx.with_input(|input| {
             input
                 .device_mut()
                 .slot_mut()
@@ -610,7 +537,7 @@ impl Device {
     pub async fn set_interface(&mut self, interface: u8, alternate: u8) -> Result<(), USBError> {
         trace!("Setting interface {interface}, alternate {alternate}");
 
-        self.with_input(|input| {
+        self.ctx.with_input(|input| {
             let c = input.control_mut();
             c.set_interface_number(interface);
             c.set_alternate_setting(alternate);
@@ -686,4 +613,21 @@ impl DeviceState {
 
 struct DeviceStateInner {
     regs: XhciRegisters,
+}
+struct DeviceContext(*mut ContextData);
+unsafe impl Send for DeviceContext {}
+unsafe impl Sync for DeviceContext {}
+
+impl Deref for DeviceContext {
+    type Target = ContextData;
+
+    fn deref(&self) -> &Self::Target {
+        unsafe { self.0.as_ref().expect("Device context pointer is null") }
+    }
+}
+
+impl DerefMut for DeviceContext {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe { self.0.as_mut().expect("Device context pointer is null") }
+    }
 }
