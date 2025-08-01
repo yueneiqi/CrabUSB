@@ -52,7 +52,7 @@ mod tests {
                     let product = device.string_descriptor(index, 0).await.unwrap();
                     info!("product: {product}");
                 }
-
+                let mut interface_desc = None;
                 for config in device.configuration_descriptors() {
                     info!("config: {:?}", config.configuration_value);
 
@@ -60,15 +60,18 @@ mod tests {
                         info!("interface: {:?}", interface.interface_number);
                         for alt in &interface.alt_settings {
                             info!("alternate: {alt:?}");
+                            if interface_desc.is_none() {
+                                interface_desc =
+                                    Some((interface.interface_number, alt.alternate_setting));
+                            }
                         }
                     }
                 }
-
-                device.set_configuration(1).await.unwrap();
-                info!("set configuration ok");
-
-                device.set_interface(0, 0).await.unwrap();
+                let (interface, alternate) = interface_desc.unwrap();
+                let interface = device.claim_interface(interface, alternate).await.unwrap();
                 info!("set interface ok");
+
+                
 
                 drop(device);
             }

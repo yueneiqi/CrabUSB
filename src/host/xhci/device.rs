@@ -3,7 +3,7 @@ use core::{
     ops::{Deref, DerefMut},
 };
 
-use alloc::{string::String, sync::Arc, vec::Vec};
+use alloc::{collections::btree_map::BTreeMap, string::String, sync::Arc, vec::Vec};
 use dma_api::DSliceMut;
 use log::{debug, trace};
 use mbarrier::mb;
@@ -18,7 +18,7 @@ use crate::{
     err::USBError,
     standard::{
         descriptors::{
-            self, ConfigurationDescriptor, EndpointDescriptor,
+            self, ConfigurationDescriptor, EndpointDescriptor, InterfaceDescriptor,
             parser::{
                 self, DESCRIPTOR_LEN_CONFIGURATION, DESCRIPTOR_LEN_DEVICE,
                 DESCRIPTOR_TYPE_CONFIGURATION, DESCRIPTOR_TYPE_DEVICE, DESCRIPTOR_TYPE_STRING,
@@ -35,6 +35,7 @@ use crate::{
         context::ContextData,
         def::{Dci, SlotId},
         endpoint::EndpointRaw,
+        interface::Interface,
         parse_default_max_packet_size_from_port_speed,
         reg::XhciRegisters,
         root::RootHub,
@@ -440,7 +441,7 @@ impl Device {
     async fn configure_endpoints_internal(
         &mut self,
         endpoints: &[EndpointDescriptor],
-    ) -> Result<(), USBError> {
+    ) -> Result<BTreeMap<Dci, EndpointRaw>, USBError> {
         trace!("Configuring endpoints for interface");
         let _ = self
             .current_config_value
@@ -448,7 +449,7 @@ impl Device {
         let ar = self.root.clone();
         let mut root = ar.lock();
         let mut max_dci = 1;
-
+        let mut out: BTreeMap<Dci, EndpointRaw> = Default::default();
         self.ctx.input_perper_modify();
 
         // 预先计算所有端点的DCI并创建环
@@ -463,7 +464,7 @@ impl Device {
             root.litsen_transfer(&ep_raw.ring);
             // let ring_addr = ring.bus_addr();
             let ring_addr = ep_raw.bus_addr();
-
+            out.insert(dci.into(), ep_raw);
             trace!(
                 "Configuring endpoint: DCI {}, Type: {:?}, Max Packet Size: {}, Interval: {}",
                 dci,
@@ -531,10 +532,14 @@ impl Device {
             .await?;
 
         debug!("Endpoints configured successfully");
-        Ok(())
+        Ok(out)
     }
 
-    pub async fn set_interface(&mut self, interface: u8, alternate: u8) -> Result<(), USBError> {
+    async fn set_interface(
+        &mut self,
+        interface: u8,
+        alternate: u8,
+    ) -> Result<BTreeMap<Dci, EndpointRaw>, USBError> {
         trace!("Setting interface {interface}, alternate {alternate}");
 
         self.ctx.with_input(|input| {
@@ -558,9 +563,7 @@ impl Device {
 
         let endpoints = self.find_interface_endpoints(interface, alternate)?;
 
-        self.configure_endpoints_internal(&endpoints).await?;
-
-        Ok(())
+        self.configure_endpoints_internal(&endpoints).await
     }
 
     fn find_interface_endpoints(
@@ -574,6 +577,50 @@ impl Device {
                     for alt in &iface.alt_settings {
                         if alt.alternate_setting == alternate {
                             return Ok(alt.endpoints.clone());
+                        }
+                    }
+                }
+            }
+        }
+        Err(USBError::NotFound)
+    }
+
+    pub async fn claim_interface(
+        &mut self,
+        interface: u8,
+        alternate: u8,
+    ) -> Result<Interface, USBError> {
+        trace!("Claiming interface {interface}, alternate {alternate}");
+        let config = self.find_interface_config(interface)?;
+        self.set_configuration(config.configuration_value).await?;
+        let ep_map = self.set_interface(interface, alternate).await?;
+        let desc = self.find_interface_desc(interface, alternate)?;
+        let interface = Interface::new(desc, ep_map);
+        Ok(interface)
+    }
+
+    fn find_interface_config(&self, interface: u8) -> Result<&ConfigurationDescriptor, USBError> {
+        for config in &self.config_desc {
+            for iface in &config.interfaces {
+                if iface.interface_number == interface {
+                    return Ok(config);
+                }
+            }
+        }
+        Err(USBError::NotFound)
+    }
+
+    fn find_interface_desc(
+        &self,
+        interface: u8,
+        alternate: u8,
+    ) -> Result<InterfaceDescriptor, USBError> {
+        for config in &self.config_desc {
+            for iface in &config.interfaces {
+                if iface.interface_number == interface {
+                    for alt in &iface.alt_settings {
+                        if alt.alternate_setting == alternate {
+                            return Ok(alt.clone());
                         }
                     }
                 }
