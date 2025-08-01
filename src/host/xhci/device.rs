@@ -196,7 +196,7 @@ impl Device {
         Ok(())
     }
 
-    pub async fn control_in(&mut self, param: Control, buff: &mut [u8]) -> Result<(), USBError> {
+    pub async fn control_in(&mut self, param: Control, buff: &mut [u8]) -> Result<usize, USBError> {
         self.control_transfer(ControlRaw {
             request_type: RequestType {
                 direction: Direction::In,
@@ -215,7 +215,7 @@ impl Device {
         .await
     }
 
-    pub async fn control_out(&mut self, param: Control, buff: &[u8]) -> Result<(), USBError> {
+    pub async fn control_out(&mut self, param: Control, buff: &[u8]) -> Result<usize, USBError> {
         self.control_transfer(ControlRaw {
             request_type: RequestType {
                 direction: Direction::Out,
@@ -234,7 +234,7 @@ impl Device {
         .await
     }
 
-    async fn control_transfer(&mut self, urb: ControlRaw) -> Result<(), USBError> {
+    async fn control_transfer(&mut self, urb: ControlRaw) -> Result<usize, USBError> {
         let mut trbs: Vec<transfer::Allowed> = Vec::new();
         let mut setup = transfer::SetupStage::default();
         let mut buff_data = 0;

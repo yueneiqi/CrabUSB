@@ -76,9 +76,11 @@ mod tests {
 
                 let mut bulk_in = interface.endpoint::<Bulk, In>(0x81).unwrap();
 
-                let mut data = alloc::vec![0u8; 64];
+                let mut buff = alloc::vec![0u8; 64];
 
-                while bulk_in.transfer(&mut data).await.is_ok() {
+                while let Ok(n) = bulk_in.transfer(&mut buff).await {
+                    let data = &buff[..n];
+
                     info!("bulk in data: {data:?}",);
                 }
 

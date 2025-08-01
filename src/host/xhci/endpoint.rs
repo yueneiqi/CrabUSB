@@ -44,7 +44,7 @@ impl EndpointRaw {
         direction: Direction,
         buff_addr: usize,
         buff_len: usize,
-    ) -> Result<(), USBError> {
+    ) -> Result<usize, USBError> {
         let mut trb_ptr = BusAddr(0);
 
         for trb in trbs {
@@ -84,7 +84,7 @@ impl EndpointRaw {
             );
             dm.preper_read_all();
         }
-        Ok(())
+        Ok(ret.trb_transfer_length() as usize)
     }
 
     pub fn bus_addr(&self) -> BusAddr {
@@ -129,7 +129,7 @@ impl<T: kind::Sealed, D: direction::Sealed> Endpoint<T, D> {
 }
 
 impl Endpoint<kind::Bulk, direction::In> {
-    pub async fn transfer(&mut self, data: &mut [u8]) -> Result<(), USBError> {
+    pub async fn transfer(&mut self, data: &mut [u8]) -> Result<usize, USBError> {
         if self.desc.direction != Direction::In {
             return Err(USBError::Unknown);
         }
@@ -165,7 +165,7 @@ impl Endpoint<kind::Bulk, direction::In> {
 }
 
 impl Endpoint<kind::Bulk, direction::Out> {
-    pub async fn transfer(&mut self, data: &[u8]) -> Result<(), USBError> {
+    pub async fn transfer(&mut self, data: &[u8]) -> Result<usize, USBError> {
         if self.desc.direction != Direction::Out {
             return Err(USBError::Unknown);
         }
@@ -202,7 +202,7 @@ impl Endpoint<kind::Bulk, direction::Out> {
 }
 
 impl Endpoint<kind::Interrupt, direction::In> {
-    pub async fn transfer(&mut self, data: &mut [u8]) -> Result<(), USBError> {
+    pub async fn transfer(&mut self, data: &mut [u8]) -> Result<usize, USBError> {
         if self.desc.direction != Direction::In {
             return Err(USBError::Unknown);
         }
@@ -238,7 +238,7 @@ impl Endpoint<kind::Interrupt, direction::In> {
 }
 
 impl Endpoint<kind::Interrupt, direction::Out> {
-    pub async fn transfer(&mut self, data: &[u8]) -> Result<(), USBError> {
+    pub async fn transfer(&mut self, data: &[u8]) -> Result<usize, USBError> {
         if self.desc.direction != Direction::Out {
             return Err(USBError::Unknown);
         }
@@ -275,7 +275,7 @@ impl Endpoint<kind::Interrupt, direction::Out> {
 }
 
 impl Endpoint<kind::Isochronous, direction::In> {
-    pub async fn transfer(&mut self, data: &mut [u8]) -> Result<(), USBError> {
+    pub async fn transfer(&mut self, data: &mut [u8]) -> Result<usize, USBError> {
         if self.desc.direction != Direction::In {
             return Err(USBError::Unknown);
         }
@@ -312,7 +312,7 @@ impl Endpoint<kind::Isochronous, direction::In> {
 }
 
 impl Endpoint<kind::Isochronous, direction::Out> {
-    pub async fn transfer(&mut self, data: &[u8]) -> Result<(), USBError> {
+    pub async fn transfer(&mut self, data: &[u8]) -> Result<usize, USBError> {
         if self.desc.direction != Direction::Out {
             return Err(USBError::Unknown);
         }
