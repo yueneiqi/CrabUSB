@@ -60,6 +60,19 @@ impl ContextData {
         }
     }
 
+    pub fn input_perper_modify(&mut self) {
+        self.with_input(|input| {
+            let control_context = input.control_mut();
+            for i in 0..32 {
+                control_context.clear_add_context_flag(i);
+                if i > 1 {
+                    control_context.clear_drop_context_flag(i);
+                }
+            }
+            control_context.set_add_context_flag(0);
+        });
+    }
+
     pub fn with_empty_input<F>(&mut self, f: F)
     where
         F: FnOnce(&mut dyn InputHandler),

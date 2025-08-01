@@ -352,6 +352,13 @@ impl Device {
         }
     }
 
+    fn input_perper_modify(&self) {
+        unsafe {
+            let data = &mut *self.ctx.0;
+            data.input_perper_modify();
+        }
+    }
+
     fn with_empty_input<F>(&self, f: F)
     where
         F: FnOnce(&mut dyn InputHandler),
@@ -515,16 +522,7 @@ impl Device {
         let mut root = ar.lock();
         let mut max_dci = 1;
 
-        self.with_input(|input| {
-            let control_context = input.control_mut();
-            for i in 0..32 {
-                control_context.clear_add_context_flag(i);
-                if i > 1 {
-                    control_context.clear_drop_context_flag(i);
-                }
-            }
-            control_context.set_add_context_flag(0);
-        });
+        self.input_perper_modify();
 
         // 预先计算所有端点的DCI并创建环
         for ep in endpoints {

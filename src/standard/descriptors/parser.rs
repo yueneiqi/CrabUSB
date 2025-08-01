@@ -1,6 +1,7 @@
 //! Utilities for parsing USB descriptors.
 //!
 //! Descriptors are blocks of data that describe the functionality of a USB device.
+#![allow(unused)]
 
 use core::{fmt::Debug, iter, num::NonZeroU8, ops::Deref};
 
