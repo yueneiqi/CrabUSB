@@ -407,10 +407,6 @@ impl RootHub {
         }
     }
 
-    pub fn transfer_waiter(&self) -> WaitMap<TransferEvent> {
-        self.lock().wait_transfer.clone()
-    }
-
     pub fn init(&self) -> Result<(), USBError> {
         self.try_lock().unwrap().init()
     }

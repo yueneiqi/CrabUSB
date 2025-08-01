@@ -325,13 +325,6 @@ impl Device {
             .expect("Control ring not found")
     }
 
-    fn get_endpoint_raw(&self, dci: Dci) -> EndpointRaw {
-        self.ctx()
-            .get_ring(dci)
-            .map(|r| EndpointRaw::new(dci, r, &self.state))
-            .expect("Endpoint raw not found")
-    }
-
     // pub fn id(&self) -> SlotId {
     //     self.id
     // }

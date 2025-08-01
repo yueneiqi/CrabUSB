@@ -4,7 +4,7 @@ use mbarrier::mb;
 use xhci::{
     registers::doorbell,
     ring::trb::{
-        event::{CompletionCode, TransferEvent},
+        event::CompletionCode,
         transfer::{self, Direction},
     },
 };
@@ -16,27 +16,19 @@ use crate::{
     xhci::{def::Dci, device::DeviceState, ring::Ring},
 };
 
-struct RingWarper(*mut Ring);
-unsafe impl Send for RingWarper {}
-unsafe impl Sync for RingWarper {}
-
 pub(crate) struct EndpointRaw {
     dci: Dci,
-    ring: RingWarper,
+    ring: Ring,
     device: DeviceState,
 }
 
 impl EndpointRaw {
-    pub fn new(dci: Dci, ring: *mut Ring, device: &DeviceState) -> Self {
-        Self {
+    pub fn new(dci: Dci, device: &DeviceState) -> Result<Self, USBError> {
+        Ok(Self {
             dci,
-            ring: RingWarper(ring),
+            ring: Ring::new(true, dma_api::Direction::Bidirectional)?,
             device: device.clone(),
-        }
-    }
-
-    pub fn ring(&mut self) -> &mut Ring {
-        unsafe { &mut *self.ring.0 }
+        })
     }
 
     pub async fn enque(
@@ -62,7 +54,7 @@ impl EndpointRaw {
         let mut trb_ptr = BusAddr(0);
 
         for trb in trbs {
-            trb_ptr = self.ring().enque_transfer(trb);
+            trb_ptr = self.ring.enque_transfer(trb);
         }
 
         trace!("trb : {trb_ptr:#x?}");
