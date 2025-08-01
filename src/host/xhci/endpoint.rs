@@ -5,7 +5,7 @@ use xhci::{
     registers::doorbell,
     ring::trb::{
         event::CompletionCode,
-        transfer::{self, Normal},
+        transfer::{self, Isoch, Normal},
     },
 };
 
@@ -261,6 +261,81 @@ impl Endpoint<kind::Interrupt, direction::Out> {
                 .set_trb_transfer_length(len as _)
                 .set_interrupter_target(0)
                 .set_interrupt_on_short_packet()
+                .set_interrupt_on_completion(),
+        );
+        self.raw
+            .enque(
+                [trbs].into_iter(),
+                self.desc.direction,
+                addr_virt,
+                data.len(),
+            )
+            .await
+    }
+}
+
+impl Endpoint<kind::Isochronous, direction::In> {
+    pub async fn transfer(&mut self, data: &mut [u8]) -> Result<(), USBError> {
+        if self.desc.direction != Direction::In {
+            return Err(USBError::Unknown);
+        }
+
+        if self.desc.transfer_type != EndpointType::Isochronous {
+            return Err(USBError::Unknown);
+        }
+        let len = data.len();
+        let addr_virt = data.as_mut_ptr() as usize;
+        let mut addr_bus = 0;
+
+        if len > 0 {
+            let dm = DSliceMut::from(data, dma_api::Direction::FromDevice);
+            addr_bus = dm.bus_addr();
+        }
+
+        // 根据xHCI规范3.2.11，使用Isoch TRB
+        let trbs = transfer::Allowed::Isoch(
+            *Isoch::new()
+                .set_data_buffer_pointer(addr_bus as _)
+                .set_trb_transfer_length(len as _)
+                .set_interrupter_target(0)
+                .set_interrupt_on_completion(),
+        );
+        self.raw
+            .enque(
+                [trbs].into_iter(),
+                self.desc.direction,
+                addr_virt,
+                data.len(),
+            )
+            .await
+    }
+}
+
+impl Endpoint<kind::Isochronous, direction::Out> {
+    pub async fn transfer(&mut self, data: &[u8]) -> Result<(), USBError> {
+        if self.desc.direction != Direction::Out {
+            return Err(USBError::Unknown);
+        }
+
+        if self.desc.transfer_type != EndpointType::Isochronous {
+            return Err(USBError::Unknown);
+        }
+        let len = data.len();
+        let addr_virt = data.as_ptr() as usize;
+        let mut addr_bus = 0;
+
+        if len > 0 {
+            let dm = DSlice::from(data, dma_api::Direction::ToDevice);
+            dm.confirm_write_all();
+            addr_bus = dm.bus_addr();
+        }
+
+        // 根据xHCI规范3.2.11，使用Isoch TRB
+        let trbs = transfer::Allowed::Isoch(
+            *Isoch::new()
+                .set_data_buffer_pointer(addr_bus as _)
+                .set_trb_transfer_length(len as _)
+                .set_interrupter_target(0)
                 .set_interrupt_on_completion(),
         );
         self.raw
