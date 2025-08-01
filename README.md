@@ -1,20 +1,133 @@
 # CrabUSB
 
-Rust 实现的 USB-Host 驱动
+A USB Host driver implementation written in Rust for embedded systems.
 
-## 测试
+## Overview
 
-运行Qemu测例
+CrabUSB is a `no_std` USB Host driver library that provides async support for USB device communication. It currently supports xHCI (Extensible Host Controller Interface) and is designed for embedded systems and operating system kernels.
+
+## Features
+
+- **Async/Await Support**: Built with async primitives for non-blocking USB operations
+- **xHCI Controller Support**: Full implementation of xHCI specification
+- **USB Device Management**: Device enumeration, configuration, and interface claiming
+- **Standard USB Descriptors**: Complete parsing of device, configuration, interface, and endpoint descriptors
+- **Multiple Transfer Types**: Support for Control, Bulk, Interrupt, and Isochronous transfers
+- **Embedded-Friendly**: `no_std` compatible with minimal memory footprint
+- **Flexible Integration**: Works with any async executor or can be used synchronously
+
+## Architecture
+
+The driver uses a lock-free design based on TRB (Transfer Request Block) rings, where each TRB represents an async task. The future queries the ring to get async results without requiring a specific executor.
+
+## Usage
+
+### Basic Setup
+
+1. setup [dma-api](https://docs.rs/dma-api/latest/dma_api/)
+
+2. implement the `Kernel` trait for your system
+
+    ```rust
+    use crab_usb::*;
+
+    // Implement the Kernel trait for your system
+    struct MyKernel;
+
+    impl Kernel for MyKernel {
+        fn sleep(duration: Duration) -> BoxFuture<'static, ()> {
+            // Your sleep implementation
+        }
+        
+        fn page_size() -> usize {
+            4096
+        }
+    }
+
+    // Set the kernel implementation
+    set_impl!(MyKernel);
+
+    // Initialize USB host controller
+    let mut host = Xhci::new(mmio_base);
+    host.init().await?;
+    ```
+
+### Device Communication
+
+```rust
+// Probe for connected devices
+let devices = host.probe().await?;
+
+for mut device in devices {
+    // Get device descriptor
+    let desc = device.descriptor().await?;
+    println!("Device: {:?}", desc);
+    
+    // Read string descriptors
+    if let Some(index) = desc.product_string_index() {
+        let product = device.string_descriptor(index, 0).await?;
+        println!("Product: {}", product);
+    }
+    
+    // Claim an interface
+    let mut interface = device.claim_interface(0, 0).await?;
+    
+    // Get endpoint for bulk transfers
+    let mut bulk_in = interface.endpoint::<Bulk, In>(0x81)?;
+    
+    // Perform data transfer
+    let mut data = vec![0u8; 64];
+    bulk_in.transfer(&mut data).await?;
+}
+```
+
+## Testing
+
+### QEMU Testing
 
 ```bash
 cargo install ostool
 cargo test --test test -- --show-output
 ```
 
-真机使用uboot运行测例
+### Real Hardware (U-Boot)
 
 ```bash
 cargo test --release --test test -- --show-output --uboot
 ```
 
-## 参考资料
+## Supported USB Features
+
+- **USB 1.1/2.0/3.x**: Full speed, High speed, and SuperSpeed devices
+- **Device Classes**: HID, Mass Storage, Video (UVC), Audio, etc.
+- **Transfer Types**:
+  - Control transfers for device setup and configuration
+  - Bulk transfers for large data transfers
+  - Interrupt transfers for periodic data
+  - Isochronous transfers for real-time data (audio/video)
+
+## Platform Requirements
+
+- **Architecture**: Currently tested on AArch64
+- **Memory**: DMA-capable memory regions
+- **Interrupts**: Interrupt handling capability for xHCI events
+- **Timer**: For timeout and delay operations
+
+## Contributing
+
+Contributions are welcome! Please ensure that:
+
+1. Code follows Rust conventions and passes `cargo clippy`
+2. All tests pass on both QEMU and real hardware
+3. Documentation is updated for new features
+4. Commit messages are descriptive
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## References
+
+- [USB 3.2 Specification](https://www.usb.org/document-library/usb-32-specification-released-september-22-2017-and-ecns)
+- [xHCI Specification](https://www.intel.com/content/dam/www/public/us/en/documents/technical-specifications/extensible-host-controler-interface-usb-xhci.pdf)
+- [USB Descriptors and Requests](https://www.beyondlogic.org/usbnutshell/usb5.shtml)
