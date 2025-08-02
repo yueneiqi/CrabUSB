@@ -129,6 +129,84 @@ impl<T: kind::Sealed, D: direction::Sealed> Endpoint<T, D> {
             _marker: core::marker::PhantomData,
         })
     }
+
+    /// 验证端点方向和传输类型
+    fn validate_endpoint(
+        &self,
+        expected_direction: Direction,
+        expected_type: EndpointType,
+    ) -> Result<(), USBError> {
+        if self.desc.direction != expected_direction {
+            return Err(USBError::Unknown);
+        }
+        if self.desc.transfer_type != expected_type {
+            return Err(USBError::Unknown);
+        }
+        Ok(())
+    }
+
+    /// 准备DMA缓冲区（输入方向）
+    fn prepare_in_buffer(&self, data: &mut [u8]) -> (usize, usize, usize) {
+        let len = data.len();
+        let addr_virt = data.as_mut_ptr() as usize;
+        let mut addr_bus = 0;
+
+        if len > 0 {
+            let dm = DSliceMut::from(data, dma_api::Direction::FromDevice);
+            addr_bus = dm.bus_addr() as usize;
+        }
+
+        (len, addr_virt, addr_bus)
+    }
+
+    /// 准备DMA缓冲区（输出方向）
+    fn prepare_out_buffer(&self, data: &[u8]) -> (usize, usize, usize) {
+        let len = data.len();
+        let addr_virt = data.as_ptr() as usize;
+        let mut addr_bus = 0;
+
+        if len > 0 {
+            let dm = DSlice::from(data, dma_api::Direction::ToDevice);
+            dm.confirm_write_all();
+            addr_bus = dm.bus_addr() as usize;
+        }
+
+        (len, addr_virt, addr_bus)
+    }
+
+    /// 创建Normal TRB
+    fn create_normal_trb(&self, addr_bus: usize, len: usize) -> transfer::Allowed {
+        transfer::Allowed::Normal(
+            *Normal::new()
+                .set_data_buffer_pointer(addr_bus as _)
+                .set_trb_transfer_length(len as _)
+                .set_interrupter_target(0)
+                .set_interrupt_on_short_packet()
+                .set_interrupt_on_completion(),
+        )
+    }
+
+    /// 创建Isoch TRB
+    fn create_isoch_trb(&self, addr_bus: usize, len: usize) -> transfer::Allowed {
+        transfer::Allowed::Isoch(
+            *Isoch::new()
+                .set_data_buffer_pointer(addr_bus as _)
+                .set_trb_transfer_length(len as _)
+                .set_interrupter_target(0)
+                .set_interrupt_on_completion(),
+        )
+    }
+
+    /// 执行传输的通用方法
+    fn execute_transfer(
+        &mut self,
+        trb: transfer::Allowed,
+        addr_virt: usize,
+        len: usize,
+    ) -> impl Future<Output = Result<usize, USBError>> {
+        self.raw
+            .enque([trb].into_iter(), self.desc.direction, addr_virt, len)
+    }
 }
 
 impl Endpoint<kind::Bulk, direction::In> {
@@ -136,37 +214,12 @@ impl Endpoint<kind::Bulk, direction::In> {
         &mut self,
         data: &mut [u8],
     ) -> Result<impl Future<Output = Result<usize, USBError>>, USBError> {
-        if self.desc.direction != Direction::In {
-            return Err(USBError::Unknown);
-        }
+        self.validate_endpoint(Direction::In, EndpointType::Bulk)?;
 
-        if self.desc.transfer_type != EndpointType::Bulk {
-            return Err(USBError::Unknown);
-        }
-        let len = data.len();
-        let addr_virt = data.as_mut_ptr() as usize;
-        let mut addr_bus = 0;
+        let (len, addr_virt, addr_bus) = self.prepare_in_buffer(data);
+        let trb = self.create_normal_trb(addr_bus, len);
 
-        if len > 0 {
-            let dm = DSliceMut::from(data, dma_api::Direction::FromDevice);
-            addr_bus = dm.bus_addr();
-        }
-        let trbs = transfer::Allowed::Normal(
-            *Normal::new()
-                .set_data_buffer_pointer(addr_bus as _)
-                .set_trb_transfer_length(len as _)
-                .set_interrupter_target(0)
-                .set_interrupt_on_short_packet()
-                .set_interrupt_on_completion(),
-        );
-        let fur = self.raw.enque(
-            [trbs].into_iter(),
-            self.desc.direction,
-            addr_virt,
-            data.len(),
-        );
-
-        Ok(fur)
+        Ok(self.execute_transfer(trb, addr_virt, len))
     }
 }
 
@@ -175,36 +228,12 @@ impl Endpoint<kind::Bulk, direction::Out> {
         &mut self,
         data: &[u8],
     ) -> Result<impl Future<Output = Result<usize, USBError>>, USBError> {
-        if self.desc.direction != Direction::Out {
-            return Err(USBError::Unknown);
-        }
+        self.validate_endpoint(Direction::Out, EndpointType::Bulk)?;
 
-        if self.desc.transfer_type != EndpointType::Bulk {
-            return Err(USBError::Unknown);
-        }
-        let len = data.len();
-        let addr_virt = data.as_ptr() as usize;
-        let mut addr_bus = 0;
+        let (len, addr_virt, addr_bus) = self.prepare_out_buffer(data);
+        let trb = self.create_normal_trb(addr_bus, len);
 
-        if len > 0 {
-            let dm = DSlice::from(data, dma_api::Direction::ToDevice);
-            dm.confirm_write_all();
-            addr_bus = dm.bus_addr();
-        }
-        let trbs = transfer::Allowed::Normal(
-            *Normal::new()
-                .set_data_buffer_pointer(addr_bus as _)
-                .set_trb_transfer_length(len as _)
-                .set_interrupter_target(0)
-                .set_interrupt_on_short_packet()
-                .set_interrupt_on_completion(),
-        );
-        Ok(self.raw.enque(
-            [trbs].into_iter(),
-            self.desc.direction,
-            addr_virt,
-            data.len(),
-        ))
+        Ok(self.execute_transfer(trb, addr_virt, len))
     }
 }
 
@@ -213,35 +242,12 @@ impl Endpoint<kind::Interrupt, direction::In> {
         &mut self,
         data: &mut [u8],
     ) -> Result<impl Future<Output = Result<usize, USBError>>, USBError> {
-        if self.desc.direction != Direction::In {
-            return Err(USBError::Unknown);
-        }
+        self.validate_endpoint(Direction::In, EndpointType::Interrupt)?;
 
-        if self.desc.transfer_type != EndpointType::Interrupt {
-            return Err(USBError::Unknown);
-        }
-        let len = data.len();
-        let addr_virt = data.as_mut_ptr() as usize;
-        let mut addr_bus = 0;
+        let (len, addr_virt, addr_bus) = self.prepare_in_buffer(data);
+        let trb = self.create_normal_trb(addr_bus, len);
 
-        if len > 0 {
-            let dm = DSliceMut::from(data, dma_api::Direction::FromDevice);
-            addr_bus = dm.bus_addr();
-        }
-        let trbs = transfer::Allowed::Normal(
-            *Normal::new()
-                .set_data_buffer_pointer(addr_bus as _)
-                .set_trb_transfer_length(len as _)
-                .set_interrupter_target(0)
-                .set_interrupt_on_short_packet()
-                .set_interrupt_on_completion(),
-        );
-        Ok(self.raw.enque(
-            [trbs].into_iter(),
-            self.desc.direction,
-            addr_virt,
-            data.len(),
-        ))
+        Ok(self.execute_transfer(trb, addr_virt, len))
     }
 }
 
@@ -250,36 +256,12 @@ impl Endpoint<kind::Interrupt, direction::Out> {
         &mut self,
         data: &[u8],
     ) -> Result<impl Future<Output = Result<usize, USBError>>, USBError> {
-        if self.desc.direction != Direction::Out {
-            return Err(USBError::Unknown);
-        }
+        self.validate_endpoint(Direction::Out, EndpointType::Interrupt)?;
 
-        if self.desc.transfer_type != EndpointType::Interrupt {
-            return Err(USBError::Unknown);
-        }
-        let len = data.len();
-        let addr_virt = data.as_ptr() as usize;
-        let mut addr_bus = 0;
+        let (len, addr_virt, addr_bus) = self.prepare_out_buffer(data);
+        let trb = self.create_normal_trb(addr_bus, len);
 
-        if len > 0 {
-            let dm = DSlice::from(data, dma_api::Direction::ToDevice);
-            dm.confirm_write_all();
-            addr_bus = dm.bus_addr();
-        }
-        let trbs = transfer::Allowed::Normal(
-            *Normal::new()
-                .set_data_buffer_pointer(addr_bus as _)
-                .set_trb_transfer_length(len as _)
-                .set_interrupter_target(0)
-                .set_interrupt_on_short_packet()
-                .set_interrupt_on_completion(),
-        );
-        Ok(self.raw.enque(
-            [trbs].into_iter(),
-            self.desc.direction,
-            addr_virt,
-            data.len(),
-        ))
+        Ok(self.execute_transfer(trb, addr_virt, len))
     }
 }
 
@@ -288,36 +270,12 @@ impl Endpoint<kind::Isochronous, direction::In> {
         &mut self,
         data: &mut [u8],
     ) -> Result<impl Future<Output = Result<usize, USBError>>, USBError> {
-        if self.desc.direction != Direction::In {
-            return Err(USBError::Unknown);
-        }
+        self.validate_endpoint(Direction::In, EndpointType::Isochronous)?;
 
-        if self.desc.transfer_type != EndpointType::Isochronous {
-            return Err(USBError::Unknown);
-        }
-        let len = data.len();
-        let addr_virt = data.as_mut_ptr() as usize;
-        let mut addr_bus = 0;
+        let (len, addr_virt, addr_bus) = self.prepare_in_buffer(data);
+        let trb = self.create_isoch_trb(addr_bus, len);
 
-        if len > 0 {
-            let dm = DSliceMut::from(data, dma_api::Direction::FromDevice);
-            addr_bus = dm.bus_addr();
-        }
-
-        // 根据xHCI规范3.2.11，使用Isoch TRB
-        let trbs = transfer::Allowed::Isoch(
-            *Isoch::new()
-                .set_data_buffer_pointer(addr_bus as _)
-                .set_trb_transfer_length(len as _)
-                .set_interrupter_target(0)
-                .set_interrupt_on_completion(),
-        );
-        Ok(self.raw.enque(
-            [trbs].into_iter(),
-            self.desc.direction,
-            addr_virt,
-            data.len(),
-        ))
+        Ok(self.execute_transfer(trb, addr_virt, len))
     }
 }
 
@@ -326,36 +284,11 @@ impl Endpoint<kind::Isochronous, direction::Out> {
         &mut self,
         data: &[u8],
     ) -> Result<impl Future<Output = Result<usize, USBError>>, USBError> {
-        if self.desc.direction != Direction::Out {
-            return Err(USBError::Unknown);
-        }
+        self.validate_endpoint(Direction::Out, EndpointType::Isochronous)?;
 
-        if self.desc.transfer_type != EndpointType::Isochronous {
-            return Err(USBError::Unknown);
-        }
-        let len = data.len();
-        let addr_virt = data.as_ptr() as usize;
-        let mut addr_bus = 0;
+        let (len, addr_virt, addr_bus) = self.prepare_out_buffer(data);
+        let trb = self.create_isoch_trb(addr_bus, len);
 
-        if len > 0 {
-            let dm = DSlice::from(data, dma_api::Direction::ToDevice);
-            dm.confirm_write_all();
-            addr_bus = dm.bus_addr();
-        }
-
-        // 根据xHCI规范3.2.11，使用Isoch TRB
-        let trbs = transfer::Allowed::Isoch(
-            *Isoch::new()
-                .set_data_buffer_pointer(addr_bus as _)
-                .set_trb_transfer_length(len as _)
-                .set_interrupter_target(0)
-                .set_interrupt_on_completion(),
-        );
-        Ok(self.raw.enque(
-            [trbs].into_iter(),
-            self.desc.direction,
-            addr_virt,
-            data.len(),
-        ))
+        Ok(self.execute_transfer(trb, addr_virt, len))
     }
 }
