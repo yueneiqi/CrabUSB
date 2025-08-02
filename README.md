@@ -96,6 +96,32 @@ cargo test --test test -- --show-output
 cargo test --release --test test -- --show-output --uboot
 ```
 
+### Qemu using host USB devices on a Linux host
+
+```bash
+lsusb
+```
+
+for example, to find the device of a webcam:
+
+```bash
+Bus 003 Device 038: ID 1b17:0211 Sonix Technology Co., Ltd. GENERAL WEBCAM
+```
+
+add the following line to `bare-test.toml`:
+
+```toml
+args = "-usb -device qemu-xhci,id=xhci -device usb-host,bus=xhci.0,vendorid=0x1b17,productid=0x0211"
+```
+
+Then run the test
+
+if no device is found, you may do not have the permission to access the USB device, you can run the following command to add permission:
+
+```bash
+sudo chmod 666 /dev/bus/usb/003/038
+```
+
 ## Supported USB Features
 
 - **USB 1.1/2.0/3.x**: Full speed, High speed, and SuperSpeed devices
@@ -131,3 +157,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - [USB 3.2 Specification](https://www.usb.org/document-library/usb-32-specification-released-september-22-2017-and-ecns)
 - [xHCI Specification](https://www.intel.com/content/dam/www/public/us/en/documents/technical-specifications/extensible-host-controler-interface-usb-xhci.pdf)
 - [USB Descriptors and Requests](https://www.beyondlogic.org/usbnutshell/usb5.shtml)
+- [Qemu USB Emulation](https://qemu-project.gitlab.io/qemu/system/devices/usb.html)
