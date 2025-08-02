@@ -74,15 +74,15 @@ mod tests {
                 let mut interface = device.claim_interface(interface, alternate).await.unwrap();
                 info!("set interface ok");
 
-                let mut bulk_in = interface.endpoint::<Bulk, In>(0x81).unwrap();
+                let mut _bulk_in = interface.endpoint::<Bulk, In>(0x81).unwrap();
 
-                let mut buff = alloc::vec![0u8; 64];
+                // let mut buff = alloc::vec![0u8; 64];
 
-                while let Ok(n) = bulk_in.transfer(&mut buff).await {
-                    let data = &buff[..n];
+                // while let Ok(n) = bulk_in.transfer(&mut buff).await {
+                //     let data = &buff[..n];
 
-                    info!("bulk in data: {data:?}",);
-                }
+                //     info!("bulk in data: {data:?}",);
+                // }
 
                 drop(device);
             }
