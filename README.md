@@ -131,6 +131,8 @@ SUBSYSTEM=="usb", ATTR{idVendor}=="1b17", ATTR{idProduct}=="0211", GROUP="plugde
 then reload udev rules:
 
 ```bash
+sudo usermod -aG plugdev $USER
+
 sudo udevadm control --reload-rules
 sudo udevadm trigger
 ```
