@@ -8,7 +8,6 @@ license = "MIT"
 name = "crab-usb"
 repository = "https://github.com/drivercraft/CrabUSB"
 version = "0.1.2"
-registry = "crates-io"
 
 [dependencies]
 bitflags = "2.8"
