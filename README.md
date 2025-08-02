@@ -122,6 +122,27 @@ if no device is found, you may do not have the permission to access the USB devi
 sudo chmod 666 /dev/bus/usb/003/038
 ```
 
+or you can add rules to `/etc/udev/rules.d/99-usb.rules`:
+
+```text
+SUBSYSTEM=="usb", ATTR{idVendor}=="1b17", ATTR{idProduct}=="0211", GROUP="plugdev", MODE="660"
+```
+
+then reload udev rules:
+
+```bash
+sudo udevadm control --reload-rules
+sudo udevadm trigger
+```
+
+check if the device is accessible:
+
+```bash
+ls -l /dev/bus/usb/003/038
+```
+
+
+
 ## Supported USB Features
 
 - **USB 1.1/2.0/3.x**: Full speed, High speed, and SuperSpeed devices

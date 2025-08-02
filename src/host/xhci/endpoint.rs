@@ -93,7 +93,7 @@ impl EndpointRaw {
 }
 
 impl EndpointDescriptor {
-    pub fn endpoint_type(&self) -> xhci::context::EndpointType {
+    pub(crate) fn endpoint_type(&self) -> xhci::context::EndpointType {
         match self.transfer_type {
             standard::descriptors::EndpointType::Control => xhci::context::EndpointType::Control,
             standard::descriptors::EndpointType::Isochronous => match self.direction {
