@@ -38,13 +38,13 @@ impl EndpointRaw {
         })
     }
 
-    pub async fn enque(
+    pub fn enque(
         &mut self,
         trbs: impl Iterator<Item = transfer::Allowed>,
         direction: Direction,
         buff_addr: usize,
         buff_len: usize,
-    ) -> Result<usize, USBError> {
+    ) -> impl Future<Output = Result<usize, USBError>> {
         let mut trb_ptr = BusAddr(0);
 
         for trb in trbs {
@@ -60,31 +60,34 @@ impl EndpointRaw {
 
         self.device.doorbell(bell);
 
-        let ret = unsafe { self.device.root.try_wait_for_transfer(trb_ptr).unwrap() }.await;
+        let fur = unsafe { self.device.root.try_wait_for_transfer(trb_ptr).unwrap() };
 
-        match ret.completion_code() {
-            Ok(code) => {
-                if !matches!(code, CompletionCode::Success) {
-                    return Err(USBError::TransferEventError(code));
+        async move {
+            let ret = fur.await;
+            match ret.completion_code() {
+                Ok(code) => {
+                    if !matches!(code, CompletionCode::Success) {
+                        return Err(USBError::TransferEventError(code));
+                    }
                 }
+                Err(_e) => return Err(USBError::Unknown),
             }
-            Err(_e) => return Err(USBError::Unknown),
-        }
 
-        if buff_len > 0 {
-            let data_slice =
-                unsafe { core::slice::from_raw_parts_mut(buff_addr as *mut u8, buff_len) };
+            if buff_len > 0 {
+                let data_slice =
+                    unsafe { core::slice::from_raw_parts_mut(buff_addr as *mut u8, buff_len) };
 
-            let dm = DSliceMut::from(
-                data_slice,
-                match direction {
-                    Direction::Out => dma_api::Direction::ToDevice,
-                    Direction::In => dma_api::Direction::FromDevice,
-                },
-            );
-            dm.preper_read_all();
+                let dm = DSliceMut::from(
+                    data_slice,
+                    match direction {
+                        Direction::Out => dma_api::Direction::ToDevice,
+                        Direction::In => dma_api::Direction::FromDevice,
+                    },
+                );
+                dm.preper_read_all();
+            }
+            Ok(ret.trb_transfer_length() as usize)
         }
-        Ok(ret.trb_transfer_length() as usize)
     }
 
     pub fn bus_addr(&self) -> BusAddr {
@@ -129,7 +132,10 @@ impl<T: kind::Sealed, D: direction::Sealed> Endpoint<T, D> {
 }
 
 impl Endpoint<kind::Bulk, direction::In> {
-    pub async fn transfer(&mut self, data: &mut [u8]) -> Result<usize, USBError> {
+    pub fn transfer(
+        &mut self,
+        data: &mut [u8],
+    ) -> Result<impl Future<Output = Result<usize, USBError>>, USBError> {
         if self.desc.direction != Direction::In {
             return Err(USBError::Unknown);
         }
@@ -153,19 +159,22 @@ impl Endpoint<kind::Bulk, direction::In> {
                 .set_interrupt_on_short_packet()
                 .set_interrupt_on_completion(),
         );
-        self.raw
-            .enque(
-                [trbs].into_iter(),
-                self.desc.direction,
-                addr_virt,
-                data.len(),
-            )
-            .await
+        let fur = self.raw.enque(
+            [trbs].into_iter(),
+            self.desc.direction,
+            addr_virt,
+            data.len(),
+        );
+
+        Ok(fur)
     }
 }
 
 impl Endpoint<kind::Bulk, direction::Out> {
-    pub async fn transfer(&mut self, data: &[u8]) -> Result<usize, USBError> {
+    pub fn transfer(
+        &mut self,
+        data: &[u8],
+    ) -> Result<impl Future<Output = Result<usize, USBError>>, USBError> {
         if self.desc.direction != Direction::Out {
             return Err(USBError::Unknown);
         }
@@ -190,19 +199,20 @@ impl Endpoint<kind::Bulk, direction::Out> {
                 .set_interrupt_on_short_packet()
                 .set_interrupt_on_completion(),
         );
-        self.raw
-            .enque(
-                [trbs].into_iter(),
-                self.desc.direction,
-                addr_virt,
-                data.len(),
-            )
-            .await
+        Ok(self.raw.enque(
+            [trbs].into_iter(),
+            self.desc.direction,
+            addr_virt,
+            data.len(),
+        ))
     }
 }
 
 impl Endpoint<kind::Interrupt, direction::In> {
-    pub async fn transfer(&mut self, data: &mut [u8]) -> Result<usize, USBError> {
+    pub fn transfer(
+        &mut self,
+        data: &mut [u8],
+    ) -> Result<impl Future<Output = Result<usize, USBError>>, USBError> {
         if self.desc.direction != Direction::In {
             return Err(USBError::Unknown);
         }
@@ -226,19 +236,20 @@ impl Endpoint<kind::Interrupt, direction::In> {
                 .set_interrupt_on_short_packet()
                 .set_interrupt_on_completion(),
         );
-        self.raw
-            .enque(
-                [trbs].into_iter(),
-                self.desc.direction,
-                addr_virt,
-                data.len(),
-            )
-            .await
+        Ok(self.raw.enque(
+            [trbs].into_iter(),
+            self.desc.direction,
+            addr_virt,
+            data.len(),
+        ))
     }
 }
 
 impl Endpoint<kind::Interrupt, direction::Out> {
-    pub async fn transfer(&mut self, data: &[u8]) -> Result<usize, USBError> {
+    pub fn transfer(
+        &mut self,
+        data: &[u8],
+    ) -> Result<impl Future<Output = Result<usize, USBError>>, USBError> {
         if self.desc.direction != Direction::Out {
             return Err(USBError::Unknown);
         }
@@ -263,19 +274,20 @@ impl Endpoint<kind::Interrupt, direction::Out> {
                 .set_interrupt_on_short_packet()
                 .set_interrupt_on_completion(),
         );
-        self.raw
-            .enque(
-                [trbs].into_iter(),
-                self.desc.direction,
-                addr_virt,
-                data.len(),
-            )
-            .await
+        Ok(self.raw.enque(
+            [trbs].into_iter(),
+            self.desc.direction,
+            addr_virt,
+            data.len(),
+        ))
     }
 }
 
 impl Endpoint<kind::Isochronous, direction::In> {
-    pub async fn transfer(&mut self, data: &mut [u8]) -> Result<usize, USBError> {
+    pub fn transfer(
+        &mut self,
+        data: &mut [u8],
+    ) -> Result<impl Future<Output = Result<usize, USBError>>, USBError> {
         if self.desc.direction != Direction::In {
             return Err(USBError::Unknown);
         }
@@ -300,19 +312,20 @@ impl Endpoint<kind::Isochronous, direction::In> {
                 .set_interrupter_target(0)
                 .set_interrupt_on_completion(),
         );
-        self.raw
-            .enque(
-                [trbs].into_iter(),
-                self.desc.direction,
-                addr_virt,
-                data.len(),
-            )
-            .await
+        Ok(self.raw.enque(
+            [trbs].into_iter(),
+            self.desc.direction,
+            addr_virt,
+            data.len(),
+        ))
     }
 }
 
 impl Endpoint<kind::Isochronous, direction::Out> {
-    pub async fn transfer(&mut self, data: &[u8]) -> Result<usize, USBError> {
+    pub fn transfer(
+        &mut self,
+        data: &[u8],
+    ) -> Result<impl Future<Output = Result<usize, USBError>>, USBError> {
         if self.desc.direction != Direction::Out {
             return Err(USBError::Unknown);
         }
@@ -338,13 +351,11 @@ impl Endpoint<kind::Isochronous, direction::Out> {
                 .set_interrupter_target(0)
                 .set_interrupt_on_completion(),
         );
-        self.raw
-            .enque(
-                [trbs].into_iter(),
-                self.desc.direction,
-                addr_virt,
-                data.len(),
-            )
-            .await
+        Ok(self.raw.enque(
+            [trbs].into_iter(),
+            self.desc.direction,
+            addr_virt,
+            data.len(),
+        ))
     }
 }
