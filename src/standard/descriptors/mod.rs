@@ -6,6 +6,40 @@ use crate::standard::transfer::Direction;
 
 pub(crate) mod parser;
 
+pub struct DeviceDescriptor {
+    pub usb_version: u16,
+    pub class: u8,
+    pub subclass: u8,
+    pub protocol: u8,
+    pub max_packet_size_0: u8,
+    pub vendor_id: u16,
+    pub product_id: u16,
+    pub device_version: u16,
+    pub manufacturer_string_index: Option<NonZero<u8>>,
+    pub product_string_index: Option<NonZero<u8>>,
+    pub serial_number_string_index: Option<NonZero<u8>>,
+    pub num_configurations: u8,
+}
+
+impl From<parser::DeviceDescriptor> for DeviceDescriptor {
+    fn from(desc: parser::DeviceDescriptor) -> Self {
+        DeviceDescriptor {
+            usb_version: desc.usb_version(),
+            class: desc.class(),
+            subclass: desc.subclass(),
+            protocol: desc.protocol(),
+            max_packet_size_0: desc.max_packet_size_0(),
+            vendor_id: desc.vendor_id(),
+            product_id: desc.product_id(),
+            device_version: desc.device_version(),
+            manufacturer_string_index: desc.manufacturer_string_index(),
+            product_string_index: desc.product_string_index(),
+            serial_number_string_index: desc.serial_number_string_index(),
+            num_configurations: desc.num_configurations(),
+        }
+    }
+}
+
 /// Endpoint type.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[allow(dead_code)]
