@@ -23,6 +23,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: cargo-bin-cache
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo install cargo-binutils
       - uses: arceos-org/setup-qemu@v1
         with:
