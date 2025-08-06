@@ -1,4 +1,5 @@
 use core::{
+    fmt::Debug,
     sync::atomic::{AtomicBool, Ordering},
     task::Poll,
 };
@@ -6,15 +7,17 @@ use core::{
 use alloc::{collections::btree_map::BTreeMap, sync::Arc};
 use futures::task::AtomicWaker;
 
-use crate::sync::RwLock;
+use crate::transfer::Direction;
 
-pub struct WaitMap<T>(Arc<RwLock<WaitMapRaw<T>>>);
+use super::sync::RwLock;
 
-unsafe impl<T> Send for WaitMap<T> {}
-unsafe impl<T> Sync for WaitMap<T> {}
+pub struct WaitMap<K: Ord + Debug, T>(Arc<RwLock<WaitMapRaw<K, T>>>);
 
-impl<T> WaitMap<T> {
-    pub fn new(id_list: impl Iterator<Item = u64>) -> Self {
+unsafe impl<K: Ord + Debug, T> Send for WaitMap<K, T> {}
+unsafe impl<K: Ord + Debug, T> Sync for WaitMap<K, T> {}
+
+impl<K: Ord + Debug, T> WaitMap<K, T> {
+    pub fn new(id_list: impl Iterator<Item = K>) -> Self {
         Self(Arc::new(RwLock::new(WaitMapRaw::new(id_list))))
     }
 
@@ -22,18 +25,27 @@ impl<T> WaitMap<T> {
         Self(Arc::new(RwLock::new(WaitMapRaw(BTreeMap::new()))))
     }
 
-    pub fn append(&self, id_ls: impl Iterator<Item = u64>) {
+    pub fn append(&self, id_ls: impl Iterator<Item = K>) {
         let mut raw = self.0.write();
         for id in id_ls {
             raw.0.insert(id, Elem::new());
         }
     }
 
-    pub unsafe fn set_result(&self, id: u64, result: T) {
+    /// Sets the result for the given id.
+    ///
+    /// # Safety
+    ///
+    /// This function is unsafe because it assumes that the id exists in the map.
+    pub unsafe fn set_result(&self, id: K, result: T) {
         unsafe { self.0.force_use().set_result(id, result) };
     }
 
-    pub fn try_wait_for_result(&self, id: u64) -> Option<Waiter<T>> {
+    pub fn try_wait_for_result<'a>(
+        &self,
+        id: K,
+        on_ready: Option<WaitOnReady>,
+    ) -> Option<Waiter<'a, T>> {
         let g = self.0.read();
         let elem =
             g.0.get(&id)
@@ -47,17 +59,26 @@ impl<T> WaitMap<T> {
         }
         Some(Waiter {
             elem: elem as *const Elem<T> as *mut Elem<T>,
+            _marker: core::marker::PhantomData,
+            on_ready,
         })
     }
 }
 
-impl<T> Clone for WaitMap<T> {
+impl<K: Ord + Debug, T> Clone for WaitMap<K, T> {
     fn clone(&self) -> Self {
         Self(Arc::clone(&self.0))
     }
 }
 
-pub struct WaitMapRaw<T>(BTreeMap<u64, Elem<T>>);
+pub struct WaitOnReady {
+    pub on_ready: fn(addr: usize, len: usize, direction: Direction),
+    pub addr: usize,
+    pub len: usize,
+    pub direction: Direction,
+}
+
+pub struct WaitMapRaw<K: Ord, T>(BTreeMap<K, Elem<T>>);
 
 struct Elem<T> {
     result: Option<T>,
@@ -77,8 +98,8 @@ impl<T> Elem<T> {
     }
 }
 
-impl<T> WaitMapRaw<T> {
-    pub fn new(id_list: impl Iterator<Item = u64>) -> Self {
+impl<K: Ord + Debug, T> WaitMapRaw<K, T> {
+    pub fn new(id_list: impl Iterator<Item = K>) -> Self {
         let mut map = BTreeMap::new();
         for id in id_list {
             map.insert(id, Elem::new());
@@ -86,14 +107,14 @@ impl<T> WaitMapRaw<T> {
         Self(map)
     }
 
-    pub unsafe fn set_result(&mut self, id: u64, result: T) {
+    unsafe fn set_result(&mut self, id: K, result: T) {
         let entry = match self.0.get_mut(&id) {
             Some(entry) => entry,
             None => {
                 let id_0 = self.0.keys().next();
                 let id_end = self.0.keys().last();
                 panic!(
-                    "WaitMap: set_result called with unknown id {id:X}, known ids: [{id_0:X?},{id_end:X?}]"
+                    "WaitMap: set_result called with unknown id {id:X?}, known ids: [{id_0:X?},{id_end:X?}]"
                 );
             }
         };
@@ -105,18 +126,20 @@ impl<T> WaitMapRaw<T> {
     }
 }
 
-pub struct Waiter<T> {
+pub struct Waiter<'a, T> {
     elem: *mut Elem<T>,
+    on_ready: Option<WaitOnReady>,
+    _marker: core::marker::PhantomData<&'a ()>,
 }
 
-unsafe impl<T> Send for Waiter<T> {}
-unsafe impl<T> Sync for Waiter<T> {}
+unsafe impl<T> Send for Waiter<'_, T> {}
+unsafe impl<T> Sync for Waiter<'_, T> {}
 
-impl<T> Future for Waiter<T> {
+impl<T> Future for Waiter<'_, T> {
     type Output = T;
 
     fn poll(
-        self: core::pin::Pin<&mut Self>,
+        mut self: core::pin::Pin<&mut Self>,
         cx: &mut core::task::Context<'_>,
     ) -> core::task::Poll<Self::Output> {
         let elem = unsafe { &mut *self.as_ref().elem };
@@ -127,6 +150,9 @@ impl<T> Future for Waiter<T> {
                 .take()
                 .expect("Waiter polled after result was set");
             elem.using.store(false, Ordering::Release);
+            if let Some(f) = self.as_mut().on_ready.take() {
+                (f.on_ready)(f.addr, f.len, f.direction);
+            }
             return Poll::Ready(result);
         }
         elem.waker.register(cx.waker());

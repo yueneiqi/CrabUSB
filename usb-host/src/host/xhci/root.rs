@@ -9,28 +9,29 @@ use core::{
 use alloc::sync::Arc;
 use log::{debug, info, trace};
 use mbarrier::wmb;
+use usb_if::{err::TransferError, transfer::wait::WaitOnReady};
 use xhci::{
     registers::doorbell,
     ring::trb::{
         command,
-        event::{Allowed, CommandCompletion, CompletionCode, TransferEvent},
+        event::{Allowed, CommandCompletion},
     },
 };
 
 use crate::{
     BusAddr, PortId,
-    err::USBError,
-    sleep,
-    wait::{WaitMap, Waiter},
-    xhci::{
+    err::{ConvertXhciError, USBError},
+    host::xhci::{
         XhciRegisters,
         context::{DeviceContextList, ScratchpadBufferArray},
         def::SlotId,
-        device::Device,
+        device::{Device, DeviceInfo},
         event::EventRing,
         reg::DisableIrqGuard,
         ring::{Ring, TrbData},
     },
+    sleep,
+    wait::{WaitMap, Waiter},
 };
 
 pub struct Root {
@@ -40,8 +41,8 @@ pub struct Root {
     pub cmd: Ring,
     pub scratchpad_buf_arr: Option<ScratchpadBufferArray>,
 
-    wait_transfer: WaitMap<TransferEvent>,
-    wait_cmd: WaitMap<CommandCompletion>,
+    wait_transfer: WaitMap<u64, core::result::Result<usize, TransferError>>,
+    wait_cmd: WaitMap<u64, CommandCompletion>,
 }
 
 impl Root {
@@ -247,8 +248,15 @@ impl Root {
                         let addr = c.trb_pointer();
                         trace!("[Transfer] << {allowed:?} @{addr:X}");
                         debug!("transfer event: {c:?}");
+                        let result = match c.completion_code() {
+                            Ok(code) => match code.to_result() {
+                                Ok(_) => Ok(c.trb_transfer_length() as usize),
+                                Err(e) => Err(e),
+                            },
+                            Err(_e) => Err(TransferError::Other("Transfer failed".into())),
+                        };
 
-                        self.wait_transfer.set_result(c.trb_pointer(), c)
+                        self.wait_transfer.set_result(c.trb_pointer(), result);
                     }
                     _ => {
                         debug!("unhandled event {allowed:?}");
@@ -284,14 +292,16 @@ impl Root {
         }
     }
 
-    pub fn cmd_request(&mut self, trb: command::Allowed) -> Waiter<CommandCompletion> {
+    pub fn cmd_request<'a>(&mut self, trb: command::Allowed) -> Waiter<'a, CommandCompletion> {
         let trb_addr = self.cmd.enque_command(trb);
         wmb();
         self.reg
             .doorbell
             .write_volatile_at(0, doorbell::Register::default());
 
-        self.wait_cmd.try_wait_for_result(trb_addr.raw()).unwrap()
+        self.wait_cmd
+            .try_wait_for_result(trb_addr.raw(), None)
+            .unwrap()
     }
 
     pub(crate) fn litsen_transfer(&mut self, ring: &Ring) {
@@ -430,18 +440,20 @@ impl RootHub {
             .write_volatile_at(0, doorbell::Register::default());
     }
 
-    pub async fn post_cmd(&self, trb: command::Allowed) -> Result<CommandCompletion, USBError> {
+    pub async fn post_cmd(
+        &self,
+        trb: command::Allowed,
+    ) -> Result<CommandCompletion, TransferError> {
         let fur = self.lock().cmd_request(trb);
         let res = fur.await;
         match res.completion_code() {
             Ok(code) => {
-                if matches!(code, CompletionCode::Success) {
-                    Ok(res)
-                } else {
-                    Err(USBError::TransferEventError(code))
-                }
+                code.to_result()?;
+                Ok(res)
             }
-            Err(_e) => Err(USBError::Unknown),
+            Err(_e) => Err(TransferError::Other(
+                alloc::format!("Command failed: {:#?}", res.completion_code()).into(),
+            )),
         }
     }
 
@@ -449,7 +461,7 @@ impl RootHub {
         unsafe { self.force_use().reg.clone() }
     }
 
-    async fn device_slot_assignment(&self) -> Result<SlotId, USBError> {
+    async fn device_slot_assignment(&self) -> Result<SlotId, TransferError> {
         // enable slot
         let result = self
             .post_cmd(command::Allowed::EnableSlot(command::EnableSlot::default()))
@@ -460,7 +472,7 @@ impl RootHub {
         Ok(slot_id.into())
     }
 
-    pub async fn new_device(&self, port_idx: usize) -> Result<Device, USBError> {
+    pub async fn new_device(&self, port_idx: usize) -> Result<DeviceInfo, USBError> {
         debug!("New device on port {port_idx}");
         let slot_id = self.device_slot_assignment().await?;
         debug!("Slot {slot_id} assigned");
@@ -478,20 +490,25 @@ impl RootHub {
             );
             let ctx = root.dev_list.new_ctx(slot_id, is_64)?;
             let device = Device::new(slot_id, self, ctx, (port_idx + 1).into())?;
-            root.litsen_transfer(&device.ctrl_ep.ring);
+            device.ctrl_ep.listen(&mut root);
+
             device
         };
 
         device.init().await?;
-        Ok(device)
+        let info = DeviceInfo::new(device);
+        Ok(info)
     }
 
-    pub(crate) unsafe fn try_wait_for_transfer(
+    pub(crate) unsafe fn try_wait_for_transfer<'a>(
         &self,
         addr: BusAddr,
-    ) -> Option<Waiter<TransferEvent>> {
+        on_ready: WaitOnReady,
+    ) -> Option<Waiter<'a, Result<usize, TransferError>>> {
         let inner = unsafe { self.force_use() };
-        inner.wait_transfer.try_wait_for_result(addr.raw())
+        inner
+            .wait_transfer
+            .try_wait_for_result(addr.raw(), Some(on_ready))
     }
 }
 

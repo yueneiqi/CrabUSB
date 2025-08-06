@@ -1,18 +1,18 @@
-#![no_std]
+#![cfg_attr(not(feature = "libusb"), no_std)]
 #![feature(iterator_try_collect)]
 
 extern crate alloc;
 
 use core::time::Duration;
+pub use usb_if::descriptor::*;
+pub use usb_if::err::*;
+pub use usb_if::transfer::*;
 
 #[macro_use]
 mod _macros;
 
 pub mod err;
 mod host;
-pub mod standard;
-mod sync;
-pub(crate) mod wait;
 
 pub use futures::future::BoxFuture;
 pub use host::*;
@@ -46,9 +46,7 @@ pub(crate) fn page_size() -> usize {
 macro_rules! set_impl {
     ($t: ty) => {
         #[unsafe(no_mangle)]
-        unsafe fn _usb_host_sleep<'a>(
-            duration: core::time::Duration,
-        ) -> $crate::BoxFuture<'a, ()> {
+        unsafe fn _usb_host_sleep<'a>(duration: core::time::Duration) -> $crate::BoxFuture<'a, ()> {
             <$t as $crate::Kernel>::sleep(duration)
         }
 

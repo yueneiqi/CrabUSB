@@ -17,18 +17,15 @@ mod tests {
         platform::fdt::GetPciIrqConfig,
         println,
     };
-    use core::{pin::Pin, time::Duration};
-    use crab_usb::{
-        endpoint::{
-            direction::In,
-            kind::{Bulk, Isochronous},
-        },
-        *,
-    };
+    use core::time::Duration;
+    use crab_usb::*;
     use futures::FutureExt;
     use log::*;
     use pcie::*;
-    use usb_if::{descriptor::EndpointType, transfer::Direction};
+    use usb_if::{
+        descriptor::{ConfigurationDescriptor, EndpointType},
+        transfer::Direction,
+    };
 
     use super::*;
 
@@ -46,66 +43,88 @@ mod tests {
             info!("usb host init ok");
             info!("usb cmd test");
 
-            host.test_cmd().await.unwrap();
+            // host.test_cmd().await.unwrap();
+            // info!("usb cmd ok");
 
-            info!("usb cmd ok");
+            let ls = host.device_list().await.unwrap();
 
-            let ls = host.probe().await.unwrap();
+            for mut info in ls {
+                info!("{info}");
 
-            for mut device in ls {
-                let desc = device.descriptor().await.unwrap();
-                info!("device: {desc:?}");
-                if let Some(index) = desc.product_string_index {
-                    let product = device.string_descriptor(index, 0).await.unwrap();
-                    info!("product: {product}");
-                }
                 let mut interface_desc = None;
-                for config in device.configuration_descriptors() {
+                let mut config_desc: Option<ConfigurationDescriptor> = None;
+                for config in &info.configurations {
                     info!("config: {:?}", config.configuration_value);
 
                     for interface in &config.interfaces {
-                        info!("interface: {:?}", interface.interface_number);
                         for alt in &interface.alt_settings {
-                            info!("alternate: {alt:?}");
+                            info!(
+                                "interface[{}.{}] class {:?}",
+                                alt.interface_number,
+                                alt.alternate_setting,
+                                alt.class()
+                            );
                             if interface_desc.is_none() {
                                 interface_desc = Some(alt.clone());
+                                config_desc = Some(config.clone());
                             }
                         }
                     }
                 }
                 let interface_desc = interface_desc.unwrap();
+                let config_desc = config_desc.unwrap();
+
+                let mut device = info.open().await.unwrap();
+
+                info!("open device ok: {device}");
+
+                device
+                    .set_configuration(config_desc.configuration_value)
+                    .await
+                    .unwrap();
+                info!("set configuration ok");
+
+                // let config_value = device.current_configuration_descriptor().await.unwrap();
+                // info!("get configuration: {config_value:?}");
+
                 let mut interface = device
                     .claim_interface(
                         interface_desc.interface_number,
-                        interface_desc.interface_number,
+                        interface_desc.alternate_setting,
                     )
                     .await
                     .unwrap();
-                info!("set interface ok");
+                info!(
+                    "claim interface ok: {interface}  class {:?} subclass {:?}",
+                    interface.descriptor.class, interface.descriptor.subclass
+                );
 
                 for ep_desc in &interface_desc.endpoints {
                     info!("endpoint: {ep_desc:?}");
 
                     match (ep_desc.transfer_type, ep_desc.direction) {
                         (EndpointType::Bulk, Direction::In) => {
-                            let _bulk_in = interface.endpoint::<Bulk, In>(ep_desc.address).unwrap();
+                            let mut bulk_in = interface.endpoint_bulk_in(ep_desc.address).unwrap();
                             // You can use bulk_in to transfer data
-                            // let mut buff = alloc::vec![0u8; 64];
-                            // while let Ok(n) = bulk_in.transfer(&mut buff).await {
-                            //     let data = &buff[..n];
 
-                            //     info!("bulk in data: {data:?}",);
-                            // }
+                            let mut buff = alloc::vec![0u8; 64];
+                            while let Ok(n) = bulk_in.submit(&mut buff).unwrap().await {
+                                let data = &buff[..n];
+                                info!("bulk in data: {data:?}",);
+                                break; // For testing, break after first transfer
+                            }
                         }
-                        (EndpointType::Isochronous, Direction::In) => {
-                            let _iso_in = interface
-                                .endpoint::<Isochronous, In>(ep_desc.address)
-                                .unwrap();
-                            // You can use iso_in to transfer data
-                        }
-
+                        // (EndpointType::Isochronous, Direction::In) => {
+                        //     let _iso_in = interface
+                        //         .endpoint::<Isochronous, In>(ep_desc.address)
+                        //         .unwrap();
+                        //     // You can use iso_in to transfer data
+                        // }
                         _ => {
-                            info!("unsupported endpoint type");
+                            info!(
+                                "unsupported {:?} {:?}",
+                                ep_desc.transfer_type, ep_desc.direction
+                            );
                         }
                     }
                 }
@@ -140,7 +159,7 @@ mod tests {
     set_impl!(KernelImpl);
 
     struct XhciInfo {
-        usb: USBHost<Xhci>,
+        usb: USBHost,
         irq: Option<IrqInfo>,
     }
 
@@ -248,7 +267,7 @@ mod tests {
                     println!("irq: {irq:?}");
 
                     return XhciInfo {
-                        usb: USBHost::new(addr),
+                        usb: USBHost::new_xhci(addr),
                         irq,
                     };
                 }
@@ -269,7 +288,7 @@ mod tests {
                 let irq = node.irq_info();
 
                 return XhciInfo {
-                    usb: USBHost::new(addr),
+                    usb: USBHost::new_xhci(addr),
                     irq,
                 };
             }
@@ -278,8 +297,8 @@ mod tests {
         panic!("no xhci found");
     }
 
-    fn register_irq(irq: IrqInfo, host: &mut Pin<Box<USBHost<Xhci>>>) {
-        let ptr: *mut USBHost<Xhci> = host.as_mut().get_mut() as *mut _;
+    fn register_irq(irq: IrqInfo, host: &mut USBHost) {
+        let ptr = host as *mut USBHost;
 
         for one in &irq.cfgs {
             IrqParam {
@@ -289,7 +308,7 @@ mod tests {
             .register_builder({
                 move |_irq| {
                     unsafe {
-                        (&mut *ptr).handle_irq();
+                        (&mut *ptr).handle_event();
                     }
                     IrqHandleResult::Handled
                 }
