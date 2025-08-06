@@ -1,10 +1,6 @@
 name: Test
 
-on:
-  push:
-  pull_request:
-    branches:
-      - main  # Triggers on PR creation/update
+on: [push, pull_request]
 
 env:
   qemu-version: 9.2.4
