@@ -38,6 +38,8 @@ pub trait Device: Send + 'static {
         index: u8,
         language_id: u16,
     ) -> LocalBoxFuture<'_, Result<String, USBError>>;
+    fn control_in<'a>(&mut self, setup: ControlSetup, data: &'a mut [u8]) -> ResultTransfer<'a>;
+    fn control_out<'a>(&mut self, setup: ControlSetup, data: &'a [u8]) -> ResultTransfer<'a>;
 }
 
 pub trait Interface: Send + 'static {
@@ -59,28 +61,28 @@ pub trait Interface: Send + 'static {
     fn endpoint_iso_out(&mut self, endpoint: u8) -> Result<Box<dyn EndpintIsoOut>, USBError>;
 }
 
-pub trait TEndpint: Send + 'static {}
+pub trait TEndpoint: Send + 'static {}
 
-pub trait EndpointBulkIn: TEndpint {
+pub trait EndpointBulkIn: TEndpoint {
     fn submit<'a>(&mut self, data: &'a mut [u8]) -> ResultTransfer<'a>;
 }
-pub trait EndpointBulkOut: TEndpint {
+pub trait EndpointBulkOut: TEndpoint {
     fn submit<'a>(&mut self, data: &'a [u8]) -> ResultTransfer<'a>;
 }
 
-pub trait EndpointInterruptIn: TEndpint {
+pub trait EndpointInterruptIn: TEndpoint {
     fn submit<'a>(&mut self, data: &'a mut [u8]) -> ResultTransfer<'a>;
 }
 
-pub trait EndpointInterruptOut: TEndpint {
+pub trait EndpointInterruptOut: TEndpoint {
     fn submit<'a>(&mut self, data: &'a [u8]) -> ResultTransfer<'a>;
 }
 
-pub trait EndpintIsoIn: TEndpint {
+pub trait EndpintIsoIn: TEndpoint {
     fn submit<'a>(&mut self, data: &'a mut [u8], num_iso_packets: usize) -> ResultTransfer<'a>;
 }
 
-pub trait EndpintIsoOut: TEndpint {
+pub trait EndpintIsoOut: TEndpoint {
     fn submit<'a>(&mut self, data: &'a [u8], num_iso_packets: usize) -> ResultTransfer<'a>;
 }
 

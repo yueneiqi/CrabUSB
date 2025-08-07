@@ -7,8 +7,6 @@ use core::{
 use alloc::{collections::btree_map::BTreeMap, sync::Arc};
 use futures::task::AtomicWaker;
 
-use crate::transfer::Direction;
-
 use super::sync::RwLock;
 
 pub struct WaitMap<K: Ord + Debug, T>(Arc<RwLock<WaitMapRaw<K, T>>>);
@@ -44,7 +42,7 @@ impl<K: Ord + Debug, T> WaitMap<K, T> {
     pub fn try_wait_for_result<'a>(
         &self,
         id: K,
-        on_ready: Option<WaitOnReady>,
+        on_ready: Option<CallbackOnReady>,
     ) -> Option<Waiter<'a, T>> {
         let g = self.0.read();
         let elem =
@@ -71,12 +69,14 @@ impl<K: Ord + Debug, T> Clone for WaitMap<K, T> {
     }
 }
 
-pub struct WaitOnReady {
-    pub on_ready: fn(addr: usize, len: usize, direction: Direction),
-    pub addr: usize,
-    pub len: usize,
-    pub direction: Direction,
+pub struct CallbackOnReady {
+    pub on_ready: fn(*mut (), *mut (), *mut ()),
+    pub param1: *mut (),
+    pub param2: *mut (),
+    pub param3: *mut (),
 }
+
+unsafe impl Send for CallbackOnReady {}
 
 pub struct WaitMapRaw<K: Ord, T>(BTreeMap<K, Elem<T>>);
 
@@ -128,7 +128,7 @@ impl<K: Ord + Debug, T> WaitMapRaw<K, T> {
 
 pub struct Waiter<'a, T> {
     elem: *mut Elem<T>,
-    on_ready: Option<WaitOnReady>,
+    on_ready: Option<CallbackOnReady>,
     _marker: core::marker::PhantomData<&'a ()>,
 }
 
@@ -151,7 +151,7 @@ impl<T> Future for Waiter<'_, T> {
                 .expect("Waiter polled after result was set");
             elem.using.store(false, Ordering::Release);
             if let Some(f) = self.as_mut().on_ready.take() {
-                (f.on_ready)(f.addr, f.len, f.direction);
+                (f.on_ready)(f.param1, f.param2, f.param3);
             }
             return Poll::Ready(result);
         }

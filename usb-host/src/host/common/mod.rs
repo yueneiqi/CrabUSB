@@ -1,8 +1,10 @@
-use alloc::collections::BTreeMap;
-use alloc::{boxed::Box, string::String, vec::Vec};
+use alloc::{boxed::Box, collections::BTreeMap, string::String, sync::Arc, vec::Vec};
+use core::sync::atomic::AtomicBool;
 use core::{fmt::Display, ptr::NonNull};
-use log::debug;
-use usb_if::descriptor::Class;
+use log::{debug, trace};
+use usb_if::descriptor::{Class, DescriptorType, decode_string_descriptor};
+use usb_if::host::ControlSetup;
+use usb_if::transfer::{Recipient, Request, RequestType};
 
 use usb_if::{
     descriptor::{
@@ -13,18 +15,44 @@ use usb_if::{
 
 use crate::host::xhci::Xhci;
 
+pub struct EventHandler {
+    ptr: *mut USBHost,
+    running: Arc<AtomicBool>,
+}
+unsafe impl Send for EventHandler {}
+unsafe impl Sync for EventHandler {}
+
+impl EventHandler {
+    pub fn handle_event(&self) -> bool {
+        if !self.running.load(core::sync::atomic::Ordering::Acquire) {
+            return false;
+        }
+        unsafe {
+            (*self.ptr).handle_event();
+        }
+        true
+    }
+}
+
 pub struct USBHost {
     raw: Box<dyn Controller>,
+    running: Arc<AtomicBool>,
 }
 
 impl USBHost {
     pub fn from_trait(raw: impl Controller) -> Self {
-        USBHost { raw: Box::new(raw) }
+        USBHost {
+            raw: Box::new(raw),
+            running: Arc::new(AtomicBool::new(true)),
+        }
     }
 
     pub fn new_xhci(mmio_base: NonNull<u8>) -> Self {
         let xhci = Xhci::new(mmio_base);
-        Self { raw: xhci }
+        Self {
+            raw: xhci,
+            running: Arc::new(AtomicBool::new(true)),
+        }
     }
 
     #[cfg(feature = "libusb")]
@@ -32,6 +60,7 @@ impl USBHost {
         let libusb = crate::host::libusb::Libusb::new();
         Self {
             raw: Box::new(libusb),
+            running: Arc::new(AtomicBool::new(true)),
         }
     }
 
@@ -49,8 +78,23 @@ impl USBHost {
         Ok(device_infos.into_iter())
     }
 
-    pub fn handle_event(&mut self) {
+    fn handle_event(&mut self) {
         self.raw.handle_event();
+    }
+
+    pub fn event_handler(&mut self) -> EventHandler {
+        EventHandler {
+            ptr: self as *mut USBHost,
+            running: self.running.clone(),
+        }
+    }
+}
+
+impl Drop for USBHost {
+    fn drop(&mut self) {
+        self.running
+            .store(false, core::sync::atomic::Ordering::Release);
+        trace!("USBHost is being dropped, stopping event handler");
     }
 }
 
@@ -251,6 +295,41 @@ impl Device {
 
     pub fn product_id(&self) -> u16 {
         self.descriptor.product_id
+    }
+
+    pub async fn string_descriptor(
+        &mut self,
+        index: u8,
+        language_id: u16,
+    ) -> Result<String, USBError> {
+        // self.raw.string_descriptor(index, language_id).await
+        let mut data = alloc::vec![0u8; 256];
+        self.get_descriptor(DescriptorType::STRING, index, language_id, &mut data)
+            .await?;
+        let res = decode_string_descriptor(&data).map_err(|e| USBError::Other(e.into()))?;
+        Ok(res)
+    }
+
+    async fn get_descriptor(
+        &mut self,
+        desc_type: DescriptorType,
+        desc_index: u8,
+        language_id: u16,
+        buff: &mut [u8],
+    ) -> Result<(), USBError> {
+        self.raw
+            .control_in(
+                ControlSetup {
+                    request_type: RequestType::Standard,
+                    recipient: Recipient::Device,
+                    request: Request::GetDescriptor,
+                    value: ((desc_type.0 as u16) << 8) | desc_index as u16,
+                    index: language_id,
+                },
+                buff,
+            )?
+            .await?;
+        Ok(())
     }
 }
 

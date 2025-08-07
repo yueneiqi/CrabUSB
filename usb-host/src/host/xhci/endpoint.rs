@@ -8,7 +8,7 @@ use usb_if::{
     descriptor::{self, EndpointDescriptor, EndpointType},
     err::TransferError,
     host::{ControlSetup, ResultTransfer},
-    transfer::{BmRequestType, Direction, wait::WaitOnReady},
+    transfer::{BmRequestType, Direction, wait::CallbackOnReady},
 };
 use xhci::{
     registers::doorbell,
@@ -71,11 +71,11 @@ impl EndpointRaw {
                 .root
                 .try_wait_for_transfer(
                     trb_ptr,
-                    WaitOnReady {
+                    CallbackOnReady {
                         on_ready,
-                        addr: buff_addr,
-                        len: buff_len,
-                        direction,
+                        param1: buff_addr as *mut (),
+                        param2: buff_len as *mut (),
+                        param3: direction as u8 as usize as *mut (),
                     },
                 )
                 .unwrap()
@@ -87,7 +87,10 @@ impl EndpointRaw {
     }
 }
 
-fn on_ready(addr: usize, len: usize, direction: usb_if::transfer::Direction) {
+fn on_ready(addr: *mut (), len: *mut (), direction: *mut ()) {
+    let addr = addr as usize;
+    let len = len as usize;
+    let direction = Direction::from_address(direction as usize as u8);
     trace!("Transfer completed: addr={addr:#x}, len={len}");
     if len > 0 {
         let data_slice = unsafe { core::slice::from_raw_parts_mut(addr as *mut u8, len) };
@@ -505,7 +508,7 @@ impl Endpoint<kind::Isochronous, direction::Out> {
     }
 }
 
-impl<T, D> usb_if::host::TEndpint for Endpoint<T, D>
+impl<T, D> usb_if::host::TEndpoint for Endpoint<T, D>
 where
     T: kind::Sealed,
     D: direction::Sealed,

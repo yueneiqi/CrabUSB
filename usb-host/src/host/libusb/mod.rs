@@ -17,16 +17,19 @@ mod context;
 mod device;
 mod endpoint;
 mod interface;
+mod queue;
 
 #[macro_use]
 pub(crate) mod err;
+
+use std::sync::Arc;
 
 pub use device::DeviceInfo;
 use futures::FutureExt;
 use usb_if::host::Controller;
 
 pub struct Libusb {
-    ctx: context::Context,
+    ctx: Arc<context::Context>,
 }
 
 impl Controller for Libusb {
@@ -51,7 +54,11 @@ impl Controller for Libusb {
         .boxed_local()
     }
 
-    fn handle_event(&mut self) {}
+    fn handle_event(&mut self) {
+        if let Err(e) = self.ctx.handle_events() {
+            log::error!("Failed to handle libusb events: {e:?}");
+        }
+    }
 }
 
 impl Libusb {

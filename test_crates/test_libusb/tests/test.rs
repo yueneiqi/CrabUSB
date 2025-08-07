@@ -1,5 +1,7 @@
 #![cfg(test)]
 
+use std::{hint::spin_loop, thread};
+
 use crab_usb::{Class, DeviceInfo, USBHost};
 use log::info;
 
@@ -11,7 +13,14 @@ async fn test() {
         .init();
 
     let mut host = USBHost::new_libusb();
+    let event_handler = host.event_handler();
     let ls = host.device_list().await.unwrap();
+
+    thread::spawn(move || {
+        while event_handler.handle_event() {
+            spin_loop();
+        }
+    });
 
     let mut info: Option<DeviceInfo> = None;
 
@@ -33,6 +42,11 @@ async fn test() {
 
     let mut device = info.open().await.unwrap();
     info!("Opened device: {device}");
+
+    if let Some(index) = device.descriptor.manufacturer_string_index {
+        let s = device.string_descriptor(index.get(), 0).await.unwrap();
+        info!("Manufacturer: {s}");
+    }
 
     let config = device.current_configuration_descriptor().await.unwrap();
 

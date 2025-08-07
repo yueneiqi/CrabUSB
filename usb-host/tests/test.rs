@@ -298,7 +298,7 @@ mod tests {
     }
 
     fn register_irq(irq: IrqInfo, host: &mut USBHost) {
-        let ptr = host as *mut USBHost;
+        let handle = host.event_handler();
 
         for one in &irq.cfgs {
             IrqParam {
@@ -307,13 +307,12 @@ mod tests {
             }
             .register_builder({
                 move |_irq| {
-                    unsafe {
-                        (&mut *ptr).handle_event();
-                    }
+                    handle.handle_event();
                     IrqHandleResult::Handled
                 }
             })
             .register();
+            break;
         }
     }
 }

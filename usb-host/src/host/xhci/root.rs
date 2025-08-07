@@ -9,7 +9,7 @@ use core::{
 use alloc::sync::Arc;
 use log::{debug, info, trace};
 use mbarrier::wmb;
-use usb_if::{err::TransferError, transfer::wait::WaitOnReady};
+use usb_if::{err::TransferError, transfer::wait::CallbackOnReady};
 use xhci::{
     registers::doorbell,
     ring::trb::{
@@ -503,7 +503,7 @@ impl RootHub {
     pub(crate) unsafe fn try_wait_for_transfer<'a>(
         &self,
         addr: BusAddr,
-        on_ready: WaitOnReady,
+        on_ready: CallbackOnReady,
     ) -> Option<Waiter<'a, Result<usize, TransferError>>> {
         let inner = unsafe { self.force_use() };
         inner

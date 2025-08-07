@@ -177,6 +177,14 @@ impl usb_if::host::Device for Device {
         }
         .boxed_local()
     }
+
+    fn control_in<'a>(&mut self, setup: ControlSetup, data: &'a mut [u8]) -> ResultTransfer<'a> {
+        self.ctrl_ep.control_in(setup, data)
+    }
+
+    fn control_out<'a>(&mut self, setup: ControlSetup, data: &'a [u8]) -> ResultTransfer<'a> {
+        self.ctrl_ep.control_out(setup, data)
+    }
 }
 
 impl Device {
