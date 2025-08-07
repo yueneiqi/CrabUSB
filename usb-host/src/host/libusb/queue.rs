@@ -18,7 +18,7 @@ impl Queue {
         for _ in 0..size {
             elems.push(USBTransfer::new(0));
         }
-        let wait_map = WaitMap::new((0..size).map(|i| i));
+        let wait_map = WaitMap::new(0..size);
         Self {
             iter: 0,
             elems,

@@ -1,4 +1,4 @@
-use core::ptr::{null, null_mut};
+use core::ptr::null_mut;
 
 use libusb1_sys::{
     libusb_device_handle, libusb_fill_bulk_transfer, libusb_fill_interrupt_transfer,

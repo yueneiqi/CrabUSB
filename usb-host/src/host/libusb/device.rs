@@ -43,11 +43,9 @@ impl usb_if::host::DeviceInfo for DeviceInfo {
         Result<Box<dyn usb_if::host::Device>, usb_if::host::USBError>,
     > {
         async move {
-            let desc = self.descriptor().await?;
-
             let mut handle = std::ptr::null_mut();
             usb!(libusb_open(self.raw, &mut handle))?;
-            let device = Device::new(handle, desc);
+            let device = Device::new(handle);
 
             Ok(Box::new(device) as Box<dyn usb_if::host::Device>)
         }
@@ -184,7 +182,7 @@ pub struct Device {
 unsafe impl Send for Device {}
 
 impl Device {
-    pub(crate) fn new(raw: *mut libusb_device_handle, desc: DeviceDescriptor) -> Self {
+    pub(crate) fn new(raw: *mut libusb_device_handle) -> Self {
         let ctrl = EPControl::new(32, raw);
         Self { raw, ctrl }
     }
