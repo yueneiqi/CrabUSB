@@ -49,7 +49,7 @@ async fn main() {
                 info!("Received report: {:?}", report);
                 // Process the report as needed
             }
-            Err(e) => {
+            Err(_e) => {
                 // info!("Error receiving report: {:?}", e);
             }
         }

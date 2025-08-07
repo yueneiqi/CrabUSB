@@ -31,6 +31,7 @@ impl Queue {
         F: FnOnce(&mut USBTransfer, &mut CallbackOnReady),
     {
         let id = self.iter;
+        self.wait_map.preper_id(&id)?;
 
         let user_data = Box::new(UserData {
             id,
@@ -56,10 +57,7 @@ impl Queue {
 
         trace!("Submitted transfer id {id}");
 
-        let res = self
-            .wait_map
-            .try_wait_for_result(id, Some(on_ready))
-            .ok_or(TransferError::Other("Failed to get waiter".into()))?;
+        let res = self.wait_map.wait_for_result(id, Some(on_ready));
         self.iter = (self.iter + 1) % self.elems.len();
         Ok(res)
     }

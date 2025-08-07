@@ -292,16 +292,19 @@ impl Root {
         }
     }
 
-    pub fn cmd_request<'a>(&mut self, trb: command::Allowed) -> Waiter<'a, CommandCompletion> {
+    pub fn cmd_request<'a>(
+        &mut self,
+        trb: command::Allowed,
+    ) -> Result<Waiter<'a, CommandCompletion>, TransferError> {
         let trb_addr = self.cmd.enque_command(trb);
+        self.wait_cmd.preper_id(&trb_addr.raw())?;
+
         wmb();
         self.reg
             .doorbell
             .write_volatile_at(0, doorbell::Register::default());
 
-        self.wait_cmd
-            .try_wait_for_result(trb_addr.raw(), None)
-            .unwrap()
+        Ok(self.wait_cmd.wait_for_result(trb_addr.raw(), None))
     }
 
     pub(crate) fn litsen_transfer(&mut self, ring: &Ring) {
@@ -444,7 +447,7 @@ impl RootHub {
         &self,
         trb: command::Allowed,
     ) -> Result<CommandCompletion, TransferError> {
-        let fur = self.lock().cmd_request(trb);
+        let fur = self.lock().cmd_request(trb)?;
         let res = fur.await;
         match res.completion_code() {
             Ok(code) => {
@@ -500,15 +503,20 @@ impl RootHub {
         Ok(info)
     }
 
-    pub(crate) unsafe fn try_wait_for_transfer<'a>(
+    pub(crate) fn transfer_preper_id(&self, addr: BusAddr) -> Result<(), TransferError> {
+        let inner = unsafe { self.force_use() };
+        inner.wait_transfer.preper_id(&addr.raw())
+    }
+
+    pub(crate) unsafe fn wait_for_transfer<'a>(
         &self,
         addr: BusAddr,
         on_ready: CallbackOnReady,
-    ) -> Option<Waiter<'a, Result<usize, TransferError>>> {
+    ) -> Waiter<'a, Result<usize, TransferError>> {
         let inner = unsafe { self.force_use() };
         inner
             .wait_transfer
-            .try_wait_for_result(addr.raw(), Some(on_ready))
+            .wait_for_result(addr.raw(), Some(on_ready))
     }
 }
 

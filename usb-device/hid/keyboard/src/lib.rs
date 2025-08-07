@@ -1,12 +1,12 @@
 use crab_usb::{
-    Class, Device, DeviceInfo, Direction, EndpointInterruptIn, EndpointInterruptOut, EndpointType,
-    Interface, err::USBError,
+    Class, Device, DeviceInfo, Direction, EndpointInterruptIn, EndpointType, Interface,
+    err::USBError,
 };
 use log::debug;
 
 pub struct KeyBoard {
-    device: Device,
-    interface: Interface,
+    _device: Device,
+    _interface: Interface,
     ep_in: EndpointInterruptIn,
 }
 
@@ -58,14 +58,14 @@ impl KeyBoard {
         }
 
         Ok(Self {
-            device,
-            interface,
+            _device: device,
+            _interface: interface,
             ep_in: ep_in.ok_or(USBError::NotFound)?,
         })
     }
 
     pub async fn recv(&mut self) -> Result<Vec<u8>, USBError> {
-        let mut buf = vec![0u8; 8];  
+        let mut buf = vec![0u8; 8];
         let n = self.ep_in.submit(&mut buf)?.await?;
         if n == 0 {
             return Err(USBError::NotFound);
@@ -74,3 +74,5 @@ impl KeyBoard {
         Ok(buf.to_vec())
     }
 }
+
+

@@ -87,7 +87,7 @@ for mut device in devices {
 
 ```bash
 cargo install ostool
-cargo test --test test -- --show-output
+cargo test -p crab-usb --test test --target aarch64-unknown-none-softfloat -- --show-output
 ```
 
 ### Real Hardware (U-Boot)

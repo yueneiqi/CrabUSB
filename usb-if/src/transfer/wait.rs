@@ -6,6 +6,9 @@ use core::{
 
 use alloc::{collections::btree_map::BTreeMap, sync::Arc};
 use futures::task::AtomicWaker;
+use log::trace;
+
+use crate::err::TransferError;
 
 use super::sync::RwLock;
 
@@ -39,28 +42,40 @@ impl<K: Ord + Debug, T> WaitMap<K, T> {
         unsafe { self.0.force_use().set_result(id, result) };
     }
 
-    pub fn try_wait_for_result<'a>(
-        &self,
-        id: K,
-        on_ready: Option<CallbackOnReady>,
-    ) -> Option<Waiter<'a, T>> {
+    pub fn preper_id(&self, id: &K) -> Result<(), TransferError> {
         let g = self.0.read();
         let elem =
-            g.0.get(&id)
+            g.0.get(id)
                 .expect("WaitMap: try_wait_for_result called with unknown id");
         if elem
             .using
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_err()
         {
-            return None;
+            return Err(TransferError::RequestQueueFull);
         }
+        let g = unsafe { self.0.force_use() };
+        let elem =
+            g.0.get_mut(&id)
+                .expect("WaitMap: try_wait_for_result called with unknown id");
+        elem.result = None;
         elem.result_ok.store(false, Ordering::Release);
-        Some(Waiter {
+
+        Ok(())
+    }
+
+    pub fn wait_for_result<'a>(&self, id: K, on_ready: Option<CallbackOnReady>) -> Waiter<'a, T> {
+        let g = self.0.read();
+        let elem =
+            g.0.get(&id)
+                .expect("WaitMap: try_wait_for_result called with unknown id");
+
+        trace!("WaitMap: try_wait_for_result called with id {id:X?}, elem@{elem:p} false");
+        Waiter {
             elem: elem as *const Elem<T> as *mut Elem<T>,
             _marker: core::marker::PhantomData,
             on_ready,
-        })
+        }
     }
 }
 
@@ -157,6 +172,7 @@ impl<T> Future for Waiter<'_, T> {
             return Poll::Ready(result);
         }
         elem.waker.register(cx.waker());
+
         Poll::Pending
     }
 }

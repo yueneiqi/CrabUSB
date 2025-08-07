@@ -4,6 +4,8 @@ use alloc::boxed::Box;
 pub enum TransferError {
     #[error("Stall")]
     Stall,
+    #[error("Request queue full")]
+    RequestQueueFull,
     #[error("Other error: {0}")]
     Other(#[from] Box<dyn core::error::Error>),
 }

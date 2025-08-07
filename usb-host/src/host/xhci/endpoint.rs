@@ -59,6 +59,8 @@ impl EndpointRaw {
 
         trace!("trb : {trb_ptr:#x?}");
 
+        self.device.root.transfer_preper_id(trb_ptr)?;
+
         mb();
 
         let mut bell = doorbell::Register::default();
@@ -67,18 +69,15 @@ impl EndpointRaw {
         self.device.doorbell(bell);
 
         Ok(unsafe {
-            self.device
-                .root
-                .try_wait_for_transfer(
-                    trb_ptr,
-                    CallbackOnReady {
-                        on_ready,
-                        param1: buff_addr as *mut (),
-                        param2: buff_len as *mut (),
-                        param3: direction as u8 as usize as *mut (),
-                    },
-                )
-                .unwrap()
+            self.device.root.wait_for_transfer(
+                trb_ptr,
+                CallbackOnReady {
+                    on_ready,
+                    param1: buff_addr as *mut (),
+                    param2: buff_len as *mut (),
+                    param3: direction as u8 as usize as *mut (),
+                },
+            )
         })
     }
 
