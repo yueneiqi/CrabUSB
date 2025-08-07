@@ -12,18 +12,19 @@ use usb_if::{
     transfer::{BmRequestType, Direction},
 };
 
-use crate::host::libusb::interface::InterfaceImpl;
+use crate::host::libusb::{context::Context, interface::InterfaceImpl};
 
 pub struct DeviceInfo {
     pub(crate) raw: *mut libusb_device,
+    ctx: Arc<Context>,
 }
 
 unsafe impl Send for DeviceInfo {}
 
 impl DeviceInfo {
-    pub(crate) fn new(raw: *mut libusb_device) -> Self {
+    pub(crate) fn new(raw: *mut libusb_device, ctx: Arc<Context>) -> Self {
         let raw = unsafe { libusb_ref_device(raw) };
-        Self { raw }
+        Self { raw, ctx }
     }
 }
 
@@ -45,7 +46,7 @@ impl usb_if::host::DeviceInfo for DeviceInfo {
         async move {
             let mut handle = std::ptr::null_mut();
             usb!(libusb_open(self.raw, &mut handle))?;
-            let device = Device::new(handle);
+            let device = Device::new(handle, self.ctx.clone());
 
             Ok(Box::new(device) as Box<dyn usb_if::host::Device>)
         }
@@ -175,24 +176,17 @@ impl usb_if::host::DeviceInfo for DeviceInfo {
 }
 
 pub struct Device {
-    raw: *mut libusb_device_handle,
+    handle: Arc<DeviceHandle>,
     ctrl: EPControl,
 }
 
 unsafe impl Send for Device {}
 
 impl Device {
-    pub(crate) fn new(raw: *mut libusb_device_handle) -> Self {
-        let ctrl = EPControl::new(32, raw);
-        Self { raw, ctrl }
-    }
-}
-
-impl Drop for Device {
-    fn drop(&mut self) {
-        unsafe {
-            libusb_close(self.raw);
-        }
+    pub(crate) fn new(raw: *mut libusb_device_handle, ctx: Arc<Context>) -> Self {
+        let handle = Arc::new(DeviceHandle { raw, _ctx: ctx });
+        let ctrl = EPControl::new(32, handle.clone());
+        Self { ctrl, handle }
     }
 }
 
@@ -202,7 +196,10 @@ impl usb_if::host::Device for Device {
         configuration: u8,
     ) -> futures::future::LocalBoxFuture<'_, Result<(), usb_if::host::USBError>> {
         async move {
-            usb!(libusb_set_configuration(self.raw, configuration as _))?;
+            usb!(libusb_set_configuration(
+                self.handle.raw(),
+                configuration as _
+            ))?;
             Ok(())
         }
         .boxed_local()
@@ -213,7 +210,7 @@ impl usb_if::host::Device for Device {
     ) -> futures::future::LocalBoxFuture<'_, Result<u8, usb_if::host::USBError>> {
         async move {
             let mut config = 0;
-            usb!(libusb_get_configuration(self.raw, &mut config))?;
+            usb!(libusb_get_configuration(self.handle.raw(), &mut config))?;
             Ok(config as _)
         }
         .boxed_local()
@@ -228,27 +225,35 @@ impl usb_if::host::Device for Device {
         Result<Box<dyn usb_if::host::Interface>, usb_if::host::USBError>,
     > {
         async move {
-            let res = usb!(libusb_kernel_driver_active(self.raw, interface as _))?;
+            let res = usb!(libusb_kernel_driver_active(
+                self.handle.raw(),
+                interface as _
+            ))?;
 
             if res == 1 {
-                usb!(libusb_detach_kernel_driver(self.raw, interface as _))?;
+                usb!(libusb_detach_kernel_driver(
+                    self.handle.raw(),
+                    interface as _
+                ))?;
                 debug!("Kernel driver detached for interface {interface}");
             }
 
-            usb!(libusb_claim_interface(self.raw, interface as _))?;
+            usb!(libusb_claim_interface(self.handle.raw(), interface as _))?;
 
             debug!("Interface {interface} claimed successfully");
             if alternate != 0 {
                 usb!(libusb_set_interface_alt_setting(
-                    self.raw,
+                    self.handle.raw(),
                     interface as _,
                     alternate as _,
                 ))?;
                 debug!("Interface {interface} set to alternate setting {alternate} successfully");
             }
 
-            Ok(Box::new(InterfaceImpl::new(self.raw, self.ctrl.clone()))
-                as Box<dyn usb_if::host::Interface>)
+            Ok(
+                Box::new(InterfaceImpl::new(self.handle.raw(), self.ctrl.clone()))
+                    as Box<dyn usb_if::host::Interface>,
+            )
         }
         .boxed_local()
     }
@@ -261,7 +266,7 @@ impl usb_if::host::Device for Device {
         async move {
             let mut buf = vec![0u8; 256];
             let len = usb!(libusb_get_string_descriptor_ascii(
-                self.raw,
+                self.handle.raw(),
                 index,
                 buf.as_mut_ptr(),
                 buf.len() as _
@@ -313,14 +318,14 @@ fn libusb_device_desc_to_desc(
 #[derive(Clone)]
 pub struct EPControl {
     queue: Arc<Mutex<super::queue::Queue>>,
-    dev: *mut libusb_device_handle,
+    dev: Arc<DeviceHandle>,
 }
 
 unsafe impl Send for EPControl {}
 unsafe impl Sync for EPControl {}
 
 impl EPControl {
-    pub fn new(queue_size: usize, dev: *mut libusb_device_handle) -> Self {
+    pub fn new(queue_size: usize, dev: Arc<DeviceHandle>) -> Self {
         Self {
             queue: Arc::new(Mutex::new(super::queue::Queue::new(queue_size))),
             dev,
@@ -362,7 +367,7 @@ impl EPControl {
 
             libusb_fill_control_transfer(
                 trans.ptr,
-                self.dev,
+                self.dev.raw(),
                 src_addr,
                 transfer_callback,
                 null_mut(),
@@ -392,7 +397,7 @@ impl EPControl {
 
             libusb_fill_control_transfer(
                 trans.ptr,
-                self.dev,
+                self.dev.raw(),
                 src_addr,
                 transfer_callback,
                 null_mut(),
@@ -403,3 +408,24 @@ impl EPControl {
 }
 
 extern "system" fn transfer_callback(_transfer: *mut libusb_transfer) {}
+
+pub struct DeviceHandle {
+    raw: *mut libusb_device_handle,
+    _ctx: Arc<Context>,
+}
+unsafe impl Send for DeviceHandle {}
+unsafe impl Sync for DeviceHandle {}
+
+impl Drop for DeviceHandle {
+    fn drop(&mut self) {
+        unsafe {
+            libusb_close(self.raw);
+        }
+    }
+}
+
+impl DeviceHandle {
+    pub fn raw(&self) -> *mut libusb_device_handle {
+        self.raw
+    }
+}

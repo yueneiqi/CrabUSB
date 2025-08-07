@@ -46,7 +46,10 @@ impl Controller for Libusb {
         async move {
             let list = self.ctx.device_list()?;
             let devices = list
-                .map(|raw| Box::new(DeviceInfo::new(raw)) as Box<dyn usb_if::host::DeviceInfo>)
+                .map(|raw| {
+                    Box::new(DeviceInfo::new(raw, self.ctx.clone()))
+                        as Box<dyn usb_if::host::DeviceInfo>
+                })
                 .collect();
 
             Ok(devices)

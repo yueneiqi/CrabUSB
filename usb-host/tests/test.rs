@@ -43,9 +43,6 @@ mod tests {
             info!("usb host init ok");
             info!("usb cmd test");
 
-            // host.test_cmd().await.unwrap();
-            // info!("usb cmd ok");
-
             let ls = host.device_list().await.unwrap();
 
             for mut info in ls {

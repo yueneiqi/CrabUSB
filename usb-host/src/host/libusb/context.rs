@@ -30,13 +30,13 @@ impl Context {
     }
 }
 
-impl Drop for Context {
-    fn drop(&mut self) {
-        unsafe {
-            libusb1_sys::libusb_exit(self.0);
-        }
-    }
-}
+// impl Drop for Context {
+//     fn drop(&mut self) {
+//         unsafe {
+//             libusb1_sys::libusb_exit(self.0);
+//         }
+//     }
+// }
 
 pub struct DeviceList {
     list: *const *mut libusb_device,

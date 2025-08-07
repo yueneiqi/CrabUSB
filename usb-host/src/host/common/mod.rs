@@ -154,13 +154,13 @@ impl DeviceInfo {
             None => String::new(),
         };
 
-        let mut config_value = device.get_configuration().await?;
-        if config_value == 0 {
-            debug!("Setting configuration 1");
-            device.set_configuration(1).await?; // Reset to configuration 0
-            config_value = 1;
-        }
-        debug!("Current configuration: {config_value}");
+        // let mut config_value = device.get_configuration().await?;
+        // if config_value == 0 {
+        //     debug!("Setting configuration 1");
+        //     device.set_configuration(1).await?; // Reset to configuration 0
+        //     config_value = 1;
+        // }
+        // debug!("Current configuration: {config_value}");
 
         Ok(Device {
             descriptor: self.descriptor.clone(),
@@ -342,6 +342,7 @@ impl Display for Interface {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Interface")
             .field("string", self.descriptor.string.as_ref().unwrap())
+            .field("class", &self.class())
             .finish()
     }
 }
@@ -398,6 +399,20 @@ impl Interface {
             .map(|raw| EndpointInterruptOut { descriptor, raw })
     }
 
+    pub fn endpoint_iso_in(&mut self, endpoint: u8) -> Result<EndpointIsoIn, USBError> {
+        let descriptor = self.find_ep_desc(endpoint)?.clone();
+        self.raw
+            .endpoint_iso_in(endpoint)
+            .map(|raw| EndpointIsoIn { descriptor, raw })
+    }
+
+    pub fn endpoint_iso_out(&mut self, endpoint: u8) -> Result<EndpointIsoOut, USBError> {
+        let descriptor = self.find_ep_desc(endpoint)?.clone();
+        self.raw
+            .endpoint_iso_out(endpoint)
+            .map(|raw| EndpointIsoOut { descriptor, raw })
+    }
+
     fn find_ep_desc(&self, address: u8) -> Result<&EndpointDescriptor, USBError> {
         self.descriptor
             .endpoints
@@ -447,5 +462,27 @@ pub struct EndpointInterruptOut {
 impl EndpointInterruptOut {
     pub fn submit<'a>(&mut self, data: &'a [u8]) -> ResultTransfer<'a> {
         self.raw.submit(data)
+    }
+}
+
+pub struct EndpointIsoIn {
+    pub descriptor: EndpointDescriptor,
+    raw: Box<dyn usb_if::host::EndpintIsoIn>,
+}
+
+impl EndpointIsoIn {
+    pub fn submit<'a>(&mut self, data: &'a mut [u8], num_iso_packets: usize) -> ResultTransfer<'a> {
+        self.raw.submit(data, num_iso_packets)
+    }
+}
+
+pub struct EndpointIsoOut {
+    pub descriptor: EndpointDescriptor,
+    raw: Box<dyn usb_if::host::EndpintIsoOut>,
+}
+
+impl EndpointIsoOut {
+    pub fn submit<'a>(&mut self, data: &'a [u8], num_iso_packets: usize) -> ResultTransfer<'a> {
+        self.raw.submit(data, num_iso_packets)
     }
 }

@@ -1,5 +1,5 @@
 use libusb1_sys::{constants::LIBUSB_TRANSFER_COMPLETED, *};
-use log::debug;
+use log::*;
 use usb_if::{
     err::TransferError,
     host::ResultTransfer,
@@ -54,7 +54,7 @@ impl Queue {
             TransferError::Other(format!("Failed to submit transfer: {e:?}").into())
         })?;
 
-        debug!("Submitted transfer id {id}");
+        trace!("Submitted transfer id {id}");
 
         let res = self
             .wait_map
@@ -71,7 +71,7 @@ struct UserData<'a> {
 }
 
 extern "system" fn transfer_callback(transfer: *mut libusb_transfer) {
-    debug!("Transfer callback called");
+    trace!("Transfer callback called");
     unsafe {
         let user_data_ptr = (*transfer).user_data as *mut UserData;
         if user_data_ptr.is_null() {
