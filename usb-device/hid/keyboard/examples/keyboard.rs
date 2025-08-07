@@ -1,16 +1,13 @@
-#![cfg(test)]
-
 use std::{hint::spin_loop, thread};
 
-use crab_usb::{Class, DeviceInfo, USBHost};
-use keyboard::KeyBoard;
+use crab_usb::{DeviceInfo, USBHost};
 use log::info;
+use usb_keyboard::KeyBoard;
 
-#[tokio::test]
-async fn test() {
+#[tokio::main]
+async fn main() {
     env_logger::builder()
         .filter_level(log::LevelFilter::Debug)
-        .is_test(true)
         .init();
 
     let mut host = USBHost::new_libusb();
@@ -46,6 +43,15 @@ async fn test() {
 
     let mut keyboard = KeyBoard::new(device).await.unwrap();
 
-    
-
+    loop {
+        match keyboard.recv().await {
+            Ok(report) => {
+                info!("Received report: {:?}", report);
+                // Process the report as needed
+            }
+            Err(e) => {
+                // info!("Error receiving report: {:?}", e);
+            }
+        }
+    }
 }

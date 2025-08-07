@@ -161,15 +161,16 @@ impl DeviceInfo {
         //     config_value = 1;
         // }
         // debug!("Current configuration: {config_value}");
-
-        Ok(Device {
+        let mut device = Device {
             descriptor: self.descriptor.clone(),
-            configurations: self.configurations.clone(),
+            configurations: Vec::with_capacity(self.configurations.len()),
             raw: device,
             manufacturer_string,
             product_string,
             serial_number_string,
-        })
+        };
+        device.init_configs().await?;
+        Ok(device)
     }
 
     pub fn class(&self) -> Class {
@@ -197,7 +198,7 @@ impl DeviceInfo {
 
 pub struct Device {
     pub descriptor: usb_if::descriptor::DeviceDescriptor,
-    pub configurations: Vec<usb_if::descriptor::ConfigurationDescriptor>,
+    pub configurations: Vec<ConfigurationDescriptor>,
     pub manufacturer_string: String,
     pub product_string: String,
     pub serial_number_string: String,
@@ -249,6 +250,17 @@ impl Device {
                 descriptor: desc,
                 raw,
             })
+    }
+
+    async fn init_configs(&mut self) -> Result<(), USBError> {
+        if self.configurations.is_empty() {
+            debug!("No configurations found, reading configuration descriptors");
+            for i in 0..self.descriptor.num_configurations {
+                let config_desc = self.read_configuration_descriptor(i).await?;
+                self.configurations.push(config_desc);
+            }
+        }
+        Ok(())
     }
 
     fn find_interface_desc(
@@ -330,6 +342,25 @@ impl Device {
             )?
             .await?;
         Ok(())
+    }
+
+    async fn read_configuration_descriptor(
+        &mut self,
+        index: u8,
+    ) -> Result<ConfigurationDescriptor, USBError> {
+        let mut header = alloc::vec![0u8; ConfigurationDescriptor::LEN]; // 配置描述符头部固定为9字节
+        self.get_descriptor(DescriptorType::CONFIGURATION, index, 0, &mut header)
+            .await?;
+
+        let total_length = u16::from_le_bytes(header[2..4].try_into().unwrap()) as usize;
+        // 获取完整的配置描述符（包括接口和端点描述符）
+        let mut full_data = alloc::vec![0u8; total_length];
+        debug!("Reading configuration descriptor for index {index}, total length: {total_length}");
+        self.get_descriptor(DescriptorType::CONFIGURATION, index, 0, &mut full_data)
+            .await?;
+        let parsed_config = ConfigurationDescriptor::parse(&full_data)
+            .ok_or(USBError::Other("config descriptor parse err".into()))?;
+        Ok(parsed_config)
     }
 }
 

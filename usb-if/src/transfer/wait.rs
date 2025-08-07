@@ -55,6 +55,7 @@ impl<K: Ord + Debug, T> WaitMap<K, T> {
         {
             return None;
         }
+        elem.result_ok.store(false, Ordering::Release);
         Some(Waiter {
             elem: elem as *const Elem<T> as *mut Elem<T>,
             _marker: core::marker::PhantomData,
@@ -148,7 +149,7 @@ impl<T> Future for Waiter<'_, T> {
             let result = elem
                 .result
                 .take()
-                .expect("Waiter polled after result was set");
+                .unwrap_or_else(|| panic!("WaitMap: result is None when result_ok is true"));
             elem.using.store(false, Ordering::Release);
             if let Some(f) = self.as_mut().on_ready.take() {
                 (f.on_ready)(f.param1, f.param2, f.param3);

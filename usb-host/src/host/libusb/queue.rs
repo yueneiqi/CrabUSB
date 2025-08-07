@@ -1,4 +1,4 @@
-use libusb1_sys::{constants::LIBUSB_TRANSFER_COMPLETED, *};
+use libusb1_sys::{constants::*, *};
 use log::*;
 use usb_if::{
     err::TransferError,
@@ -85,7 +85,20 @@ extern "system" fn transfer_callback(transfer: *mut libusb_transfer) {
             Ok((*transfer).actual_length as usize)
         } else {
             Err(TransferError::Other(
-                format!("Transfer failed with status: {:?}", (*transfer).status).into(),
+                format!(
+                    "Transfer failed with status: {:?}",
+                    match (*transfer).status {
+                        LIBUSB_TRANSFER_COMPLETED => "COMPLETED",
+                        LIBUSB_TRANSFER_ERROR => "ERROR",
+                        LIBUSB_TRANSFER_TIMED_OUT => "TIMED_OUT",
+                        LIBUSB_TRANSFER_CANCELLED => "CANCELLED",
+                        LIBUSB_TRANSFER_STALL => "STALL",
+                        LIBUSB_TRANSFER_NO_DEVICE => "NO_DEVICE",
+                        LIBUSB_TRANSFER_OVERFLOW => "OVERFLOW",
+                        _ => "UNKNOWN",
+                    }
+                )
+                .into(),
             ))
         };
         wait_map.set_result(id, result);

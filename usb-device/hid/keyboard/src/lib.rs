@@ -8,7 +8,6 @@ pub struct KeyBoard {
     device: Device,
     interface: Interface,
     ep_in: EndpointInterruptIn,
-    ep_out: EndpointInterruptOut,
 }
 
 impl KeyBoard {
@@ -22,6 +21,10 @@ impl KeyBoard {
     }
 
     pub async fn new(mut device: Device) -> Result<Self, USBError> {
+        for config in device.configurations.iter() {
+            debug!("Configuration: {config:?}");
+        }
+
         let config = &device.configurations[0];
         let interface = config
             .interfaces
@@ -40,7 +43,6 @@ impl KeyBoard {
             .await?;
 
         let mut ep_in = None;
-        let mut ep_out = None;
 
         for endpoint in interface.descriptor.endpoints.clone().into_iter() {
             match (endpoint.transfer_type, endpoint.direction) {
@@ -48,10 +50,7 @@ impl KeyBoard {
                     debug!("Found interrupt IN endpoint: {endpoint:?}");
                     ep_in = Some(interface.endpoint_interrupt_in(endpoint.address)?);
                 }
-                (EndpointType::Interrupt, Direction::Out) => {
-                    debug!("Found interrupt OUT endpoint: {endpoint:?}");
-                    ep_out = Some(interface.endpoint_interrupt_out(endpoint.address)?);
-                }
+
                 _ => {
                     debug!("Ignoring endpoint: {endpoint:?}");
                 }
@@ -62,7 +61,16 @@ impl KeyBoard {
             device,
             interface,
             ep_in: ep_in.ok_or(USBError::NotFound)?,
-            ep_out: ep_out.ok_or(USBError::NotFound)?,
         })
+    }
+
+    pub async fn recv(&mut self) -> Result<Vec<u8>, USBError> {
+        let mut buf = vec![0u8; 8];  
+        let n = self.ep_in.submit(&mut buf)?.await?;
+        if n == 0 {
+            return Err(USBError::NotFound);
+        }
+        buf.truncate(n);
+        Ok(buf.to_vec())
     }
 }
