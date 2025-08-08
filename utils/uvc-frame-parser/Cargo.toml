@@ -1,16 +1,14 @@
 [package]
 edition.workspace = true
 license.workspace = true
-name = "usb-keyboard"
+name = "uvc-frame-parser"
 publish = false
 repository.workspace = true
 version = "0.1.0"
 
 [dependencies]
-crab-usb = {workspace = true, features = ["libusb"]}
-keyboard-types = "0.7"
 log = "0.4"
-
-[dev-dependencies]
 env_logger = "0.11"
+image = "0.24"
 tokio = {version = "1", features = ["full"]}
+ffmpeg-next = "7.1.0"

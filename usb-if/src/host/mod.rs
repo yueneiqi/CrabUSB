@@ -43,8 +43,8 @@ pub trait Device: Send + 'static {
 }
 
 pub trait Interface: Send + 'static {
-    // fn set_alt_setting(&mut self, alt_setting: u8) -> Result<(), USBError>;
-    // fn get_alt_setting(&self) -> Result<u8, USBError>;
+    fn set_alt_setting(&mut self, alt_setting: u8) -> Result<(), USBError>;
+    fn get_alt_setting(&self) -> Result<u8, USBError>;
     fn control_in<'a>(&mut self, setup: ControlSetup, data: &'a mut [u8]) -> ResultTransfer<'a>;
     fn control_out<'a>(&mut self, setup: ControlSetup, data: &'a [u8]) -> ResultTransfer<'a>;
     fn endpoint_bulk_in(&mut self, endpoint: u8) -> Result<Box<dyn EndpointBulkIn>, USBError>;
@@ -109,7 +109,13 @@ pub enum USBError {
     #[error("Configuration not set")]
     ConfigurationNotSet,
     #[error("Other error: {0}")]
-    Other(#[from] Box<dyn core::error::Error>),
+    Other(String),
+}
+
+impl From<Box<dyn core::error::Error>> for USBError {
+    fn from(err: Box<dyn core::error::Error>) -> Self {
+        USBError::Other(alloc::format!("{err}"))
+    }
 }
 
 #[derive(Debug, Clone)]
