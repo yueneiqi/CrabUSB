@@ -24,7 +24,7 @@ impl VideoStream {
         // packets_per_transfer = (dwMaxVideoFrameSize + endpoint_bytes_per_packet - 1) / endpoint_bytes_per_packet
         // 但保持合理的限制(最多32个包)
         let packets_per_transfer =
-            std::cmp::min(vfmt.frame_bytes().div_ceil(max_packet_size as _), 32);
+            core::cmp::min(vfmt.frame_bytes().div_ceil(max_packet_size as _), 32);
         let buffer = vec![0u8; (max_packet_size as usize) * packets_per_transfer];
 
         VideoStream {
