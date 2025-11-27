@@ -579,7 +579,12 @@ impl RootHub {
     }
 
     pub async fn new_device(&self, port_idx: usize) -> Result<DeviceInfo, USBError> {
-        debug!("New device on port {port_idx}");
+        let port_speed = {
+            let root = self.lock();
+            root.port_speed(PortId::from(port_idx + 1))
+        };
+        info!("Initializing device on port {port_idx} (speed: {port_speed})");
+
         let slot_id = self.device_slot_assignment().await?;
         debug!("Slot {slot_id} assigned");
         let mut device = {

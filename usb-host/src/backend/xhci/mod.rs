@@ -243,7 +243,7 @@ impl Xhci {
     }
 
     fn port_idx_list(&self) -> Vec<usize> {
-        let mut port_idx_list = Vec::new();
+        let mut port_info_list = Vec::new();
         let port_len = self.reg.port_register_set.len();
         for i in 0..port_len {
             let portsc = &self.reg.port_register_set.read_volatile_at(i).portsc;
@@ -260,10 +260,20 @@ impl Xhci {
                 continue;
             }
 
-            port_idx_list.push(i);
+            port_info_list.push((i, portsc.port_speed()));
         }
 
-        port_idx_list
+        // Sort ports: USB2 (High-Speed, speed >= 4) first, then USB3 (SuperSpeed, speed <= 3)
+        // This allows testing with USB2 devices when USB3 PHY is not initialized
+        port_info_list.sort_by_key(|(_, speed)| {
+            if *speed >= 4 {
+                0 // USB2 devices first
+            } else {
+                1 // USB3 devices second
+            }
+        });
+
+        port_info_list.into_iter().map(|(idx, _)| idx).collect()
     }
 
     fn root(&self) -> Result<&RootHub> {
