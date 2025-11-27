@@ -290,14 +290,18 @@ impl Device {
         self.ctx.with_empty_input(|input| {
             let control_context = input.control_mut();
             // Initialize the Input Control Context (6.2.5.1) of the Input Context by
-            // setting the A0 and A1 flags to ‘1’. These flags indicate that the Slot
+            // setting the A0 and A1 flags to '1'. These flags indicate that the Slot
             // Context and the Endpoint 0 Context of the Input Context are affected by
             // the command.
-            control_context.set_add_context_flag(0);
-            control_context.set_add_context_flag(1);
-            for i in 2..32 {
+            // IMPORTANT: All Drop Context flags must be 0, and only A0 and A1 should be set
+            for i in 0..32 {
                 control_context.clear_drop_context_flag(i);
             }
+            for i in 2..32 {
+                control_context.clear_add_context_flag(i);
+            }
+            control_context.set_add_context_flag(0);
+            control_context.set_add_context_flag(1);
 
             // Initialize the Input Slot Context data structure (6.2.2).
             // • Root Hub Port Number = Topology defined.
