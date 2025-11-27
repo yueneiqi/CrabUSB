@@ -279,7 +279,8 @@ impl Device {
         // ctrl dci
         let dci = 1;
         trace!(
-            "ctrl ring: {ctrl_ring_addr:x?}, port speed: {port_speed}, max packet size: {max_packet_size}, route string: {route_string}"
+            "ctrl ring: {ctrl_ring_addr:x?}, port speed: {port_speed}, max packet size: {max_packet_size}, route string: {route_string}, port_id: {}",
+            self.port_id.raw()
         );
 
         // let ring_cycle_bit = self.ctrl_ep.cycle;
@@ -343,6 +344,28 @@ impl Device {
             endpoint_0.set_mult(0);
             // • Error Count (CErr) = 3.
             endpoint_0.set_error_count(3);
+            // • Average TRB Length = 8 (for control endpoints)
+            endpoint_0.set_average_trb_length(8);
+        });
+
+        // Debug: Log the context values after setting them
+        self.ctx.with_input(|input| {
+            let slot_context = input.device().slot();
+            let endpoint_0 = input.device().endpoint(dci);
+
+            debug!("Slot context - port: {}, speed: {}, route_string: {}, context_entries: {}",
+                slot_context.root_hub_port_number(),
+                slot_context.speed(),
+                slot_context.route_string(),
+                slot_context.context_entries()
+            );
+            debug!("EP0 context - max_packet_size: {}, tr_dequeue_ptr: {:#x}, ep_type: {:?}, error_count: {}, max_burst_size: {}",
+                endpoint_0.max_packet_size(),
+                endpoint_0.tr_dequeue_pointer(),
+                endpoint_0.endpoint_type(),
+                endpoint_0.error_count(),
+                endpoint_0.max_burst_size()
+            );
         });
 
         mb();

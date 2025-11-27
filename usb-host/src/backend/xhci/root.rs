@@ -553,6 +553,7 @@ impl RootHub {
 
         match res.completion_code() {
             Ok(code) => {
+                debug!("Command completion code: {code:?}");
                 code.to_result()?;
                 Ok(res)
             }
