@@ -240,6 +240,7 @@ impl Root {
     fn clean_events(&mut self) -> usize {
         let mut count = 0;
         while let Some(allowed) = self.event_ring.next() {
+            trace!("Event received: {allowed:?}");
             unsafe {
                 match allowed {
                     Allowed::CommandCompletion(c) => {
@@ -251,6 +252,7 @@ impl Root {
                         // debug!("port change: {}", st.port_id());
                     }
                     Allowed::TransferEvent(c) => {
+                        trace!("Transfer event received: {c:?}");
                         // let addr = c.trb_pointer();
                         // trace!("[Transfer] << {allowed:?} @{addr:X}");
                         // debug!("transfer event: {c:?}");
@@ -265,13 +267,16 @@ impl Root {
                         self.wait_transfer.set_result(c.trb_pointer(), result);
                     }
                     _ => {
-                        // debug!("unhandled event {allowed:?}");
+                        debug!("unhandled event {allowed:?}");
                     }
                 }
             }
             count += 1;
         }
 
+        if count > 0 {
+            trace!("Processed {count} events");
+        }
         count
     }
 
