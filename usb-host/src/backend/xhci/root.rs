@@ -9,7 +9,7 @@ use core::{
 use alloc::sync::Arc;
 use log::{debug, info, trace};
 use mbarrier::{mb, wmb};
-use usb_if::{err::TransferError, transfer::wait::CallbackOnReady};
+use usb_if::{err::TransferError, transfer::wait::{CallbackOnReady, PollCallback}};
 use xhci::{
     registers::doorbell,
     ring::trb::{
@@ -330,6 +330,7 @@ impl Root {
     pub fn cmd_request<'a>(
         &mut self,
         trb: command::Allowed,
+        poll_callback: Option<PollCallback>,
     ) -> Result<Waiter<'a, CommandCompletion>, TransferError> {
         let trb_addr = self.cmd.enque_command(trb);
         self.wait_cmd.preper_id(&trb_addr.raw())?;
@@ -349,7 +350,7 @@ impl Root {
         // before the interrupt is delivered, or interrupts may not work correctly
         self.handle_event();
 
-        Ok(self.wait_cmd.wait_for_result(trb_addr.raw(), None))
+        Ok(self.wait_cmd.wait_for_result(trb_addr.raw(), None, poll_callback))
     }
 
     pub(crate) fn litsen_transfer(&mut self, ring: &Ring) {
@@ -505,7 +506,13 @@ impl RootHub {
         &self,
         trb: command::Allowed,
     ) -> Result<CommandCompletion, TransferError> {
-        let fur = self.lock().cmd_request(trb)?;
+        // Create poll callback for command polling
+        let poll_callback = PollCallback {
+            poll: poll_events_callback,
+            param: self as *const _ as *mut (),
+        };
+
+        let fur = self.lock().cmd_request(trb, Some(poll_callback))?;
 
         // Poll events while waiting for command completion
         // This is necessary on platforms where interrupts may not work reliably
@@ -606,9 +613,16 @@ impl RootHub {
     ) -> Waiter<'a, Result<usize, TransferError>> {
         let inner = unsafe { self.force_use() };
         trace!("wait_for_transfer: {addr:?}");
+
+        // Create poll callback that will call handle_event
+        let poll_callback = PollCallback {
+            poll: poll_events_callback,
+            param: self as *const _ as *mut (),
+        };
+
         inner
             .wait_transfer
-            .wait_for_result(addr.raw(), Some(on_ready))
+            .wait_for_result(addr.raw(), Some(on_ready), Some(poll_callback))
     }
 }
 
@@ -675,4 +689,11 @@ impl Drop for MutexGuard<'_> {
     fn drop(&mut self) {
         self.inner.lock.store(false, Ordering::Release);
     }
+}
+
+/// Callback function for polling events from the async runtime
+fn poll_events_callback(param: *mut ()) {
+    let root_ref = unsafe { &*(param as *const RootHub) };
+    let inner = unsafe { root_ref.force_use() };
+    inner.handle_event();
 }

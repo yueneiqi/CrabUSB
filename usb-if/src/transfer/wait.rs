@@ -64,7 +64,7 @@ impl<K: Ord + Debug, T> WaitMap<K, T> {
         Ok(())
     }
 
-    pub fn wait_for_result<'a>(&self, id: K, on_ready: Option<CallbackOnReady>) -> Waiter<'a, T> {
+    pub fn wait_for_result<'a>(&self, id: K, on_ready: Option<CallbackOnReady>, poll_callback: Option<PollCallback>) -> Waiter<'a, T> {
         let g = self.0.read();
         let elem =
             g.0.get(&id)
@@ -75,6 +75,7 @@ impl<K: Ord + Debug, T> WaitMap<K, T> {
             elem: elem as *const Elem<T> as *mut Elem<T>,
             _marker: core::marker::PhantomData,
             on_ready,
+            poll_callback,
         }
     }
 }
@@ -93,6 +94,14 @@ pub struct CallbackOnReady {
 }
 
 unsafe impl Send for CallbackOnReady {}
+
+pub struct PollCallback {
+    pub poll: fn(*mut ()),
+    pub param: *mut (),
+}
+
+unsafe impl Send for PollCallback {}
+unsafe impl Sync for PollCallback {}
 
 pub struct WaitMapRaw<K: Ord, T>(BTreeMap<K, Elem<T>>);
 
@@ -145,6 +154,7 @@ impl<K: Ord + Debug, T> WaitMapRaw<K, T> {
 pub struct Waiter<'a, T> {
     elem: *mut Elem<T>,
     on_ready: Option<CallbackOnReady>,
+    poll_callback: Option<PollCallback>,
     _marker: core::marker::PhantomData<&'a ()>,
 }
 
@@ -158,6 +168,11 @@ impl<T> Future for Waiter<'_, T> {
         mut self: core::pin::Pin<&mut Self>,
         cx: &mut core::task::Context<'_>,
     ) -> core::task::Poll<Self::Output> {
+        // Poll the event ring before checking results
+        if let Some(poll_cb) = &self.poll_callback {
+            (poll_cb.poll)(poll_cb.param);
+        }
+
         let elem = unsafe { &mut *self.as_ref().elem };
 
         if elem.result_ok.load(Ordering::Acquire) {
