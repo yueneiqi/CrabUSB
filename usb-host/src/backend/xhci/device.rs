@@ -202,9 +202,9 @@ impl Device {
     pub(crate) async fn init(&mut self) -> Result<(), USBError> {
         trace!("Initializing device with ID: {}", self.id.as_u8());
         // Perform initialization logic here
-        self.dump_device_out();
+        // self.dump_device_out();
         self.address().await?;
-        self.dump_device_out();
+        // self.dump_device_out();
         let max_packet_size = self.control_max_packet_size().await?;
 
         trace!("Max packet size: {max_packet_size}");
@@ -223,52 +223,52 @@ impl Device {
         Ok(())
     }
 
-    // fn dump_device_out(&self) {
-    //     let dev = self.ctx.output();
-
-    //     let slot_handler = dev.slot();
-    //     let num_valid_context_entries = slot_handler.context_entries();
-
-    //     info!(
-    //         " slot {} OutputContext: SlotState={:?}, ContextEntries={}",
-    //         self.id,
-    //         slot_handler.slot_state(),
-    //         num_valid_context_entries
-    //     );
-
-    //     // DCI 0 is the Slot Context
-    //     if num_valid_context_entries > 0 {
-    //         info!(
-    //             "    OutputContext DCI 0 (SlotContext): State={:?} (Details: Speed={}, RHPort={}, MaxExitLat={}, Route=0x{:X})",
-    //             slot_handler.slot_state(),
-    //             slot_handler.speed(),
-    //             slot_handler.root_hub_port_number(),
-    //             slot_handler.max_exit_latency(),
-    //             slot_handler.route_string()
-    //         );
-    //     }
-
-    //     // Endpoint Contexts are DCI 1 to (num_valid_context_entries - 1)
-    //     for dci in 1..(num_valid_context_entries as usize + 1) {
-    //         // Now dci is guaranteed to be >= 1
-    //         let ep_ctx = dev.endpoint(dci);
-    //         let ep_state = ep_ctx.endpoint_state();
-
-    //         if ep_state != EndpointState::Disabled {
-    //             info!(
-    //                 "    OutputContext DCI {}: State={:?}, Type={:?}, TR_DeqPtr=0x{:X}, MaxPktSize={}, AvgTRBLen={}, MaxBurstSize={}, ErrCnt={}",
-    //                 dci,
-    //                 ep_state,
-    //                 ep_ctx.endpoint_type(),
-    //                 ep_ctx.tr_dequeue_pointer(),
-    //                 ep_ctx.max_packet_size(),
-    //                 ep_ctx.average_trb_length(),
-    //                 ep_ctx.max_burst_size(),
-    //                 ep_ctx.error_count()
-    //             );
-    //         }
-    //     }
-    // }
+// fn dump_device_out(&self) {
+//     let dev = self.ctx().output();
+//
+//     let slot_handler = dev.slot();
+//     let num_valid_context_entries = slot_handler.context_entries();
+//
+//     info!(
+//         " slot {} OutputContext: SlotState={:?}, ContextEntries={}",
+//         self.id.as_u8(),
+//         slot_handler.slot_state(),
+//         num_valid_context_entries
+//     );
+//
+//     // DCI 0 is the Slot Context
+//     if num_valid_context_entries > 0 {
+//         info!(
+//             "    OutputContext DCI 0 (SlotContext): State={:?} (Details: Speed={}, RHPort={}, MaxExitLat={}, Route=0x{:X})",
+//             slot_handler.slot_state(),
+//             slot_handler.speed(),
+//             slot_handler.root_hub_port_number(),
+//             slot_handler.max_exit_latency(),
+//             slot_handler.route_string()
+//         );
+//     }
+//
+//     // Endpoint Contexts are DCI 1 to (num_valid_context_entries - 1)
+//     for dci in 1..(num_valid_context_entries as usize + 1) {
+//         // Now dci is guaranteed to be >= 1
+//         let ep_ctx = dev.endpoint(dci);
+//         let ep_state = ep_ctx.endpoint_state();
+//
+//         if ep_state != xhci::context::EndpointState::Disabled {
+//             info!(
+//                 "    OutputContext DCI {}: State={:?}, Type={:?}, TR_DeqPtr=0x{:X}, MaxPktSize={}, AvgTRBLen={}, MaxBurstSize={}, ErrCnt={}",
+//                 dci,
+//                 ep_state,
+//                 ep_ctx.endpoint_type(),
+//                 ep_ctx.tr_dequeue_pointer(),
+//                 ep_ctx.max_packet_size(),
+//                 ep_ctx.average_trb_length(),
+//                 ep_ctx.max_burst_size(),
+//                 ep_ctx.error_count()
+//             );
+//         }
+//     }
+// }
 
     async fn address(&mut self) -> Result<(), USBError> {
         trace!("Addressing device with ID: {}", self.id.as_u8());
