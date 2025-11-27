@@ -292,9 +292,9 @@ impl Mapper for MemMapper {
 
 fn parse_default_max_packet_size_from_port_speed(speed: u8) -> u16 {
     match speed {
-        1 => 8,
-        2 | 3 => 64,
-        4..=6 => 512,
+        1 => 8,      // Low-Speed: 8 bytes
+        2 | 3 => 64, // Full-Speed (2) and SuperSpeed (3): 64 bytes
+        4..=6 => 64, // High-Speed (4), SuperSpeedPlus (5-6): 64 bytes for control endpoints
         v => unimplemented!("PSI: {}", v),
     }
 }
