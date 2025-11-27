@@ -590,15 +590,18 @@ impl RootHub {
         debug!("Slot {slot_id} assigned");
         let mut device = {
             let mut root = self.lock();
-            let is_64 = root
+            let is_64_hw = root
                 .reg
                 .capability
                 .hccparams1
                 .read_volatile()
                 .context_size();
+            // Force 32-bit context to test if RK3588 has issues with 64-bit contexts
+            let is_64 = false;
             debug!(
-                "Creating new context for slot {slot_id}, {}",
-                if is_64 { "64-bit" } else { "32-bit" }
+                "Creating new context for slot {slot_id}, {} (HW supports: {})",
+                if is_64 { "64-bit" } else { "32-bit" },
+                if is_64_hw { "64-bit" } else { "32-bit" }
             );
             let ctx = root.dev_list.new_ctx(slot_id, is_64, self.dma_mask)?;
             let device = Device::new(slot_id, self, ctx, (port_idx + 1).into())?;
