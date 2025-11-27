@@ -293,11 +293,11 @@ impl Device {
             // setting the A0 and A1 flags to '1'. These flags indicate that the Slot
             // Context and the Endpoint 0 Context of the Input Context are affected by
             // the command.
-            // IMPORTANT: All Drop Context flags must be 0, and only A0 and A1 should be set
-            for i in 0..32 {
-                control_context.clear_drop_context_flag(i);
-            }
+            // IMPORTANT: Per xHCI spec, only A0 and A1 should be set, all other Add Context
+            // flags should be 0, and all Drop Context flags (2-31) should be 0
+            // Note: The xhci library only allows clearing Drop Context flags for indices 2-31
             for i in 2..32 {
+                control_context.clear_drop_context_flag(i);
                 control_context.clear_add_context_flag(i);
             }
             control_context.set_add_context_flag(0);
