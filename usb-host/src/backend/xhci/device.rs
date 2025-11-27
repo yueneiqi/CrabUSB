@@ -382,6 +382,8 @@ impl Device {
 
         let input_bus_addr = self.ctx().input_bus_addr();
         trace!("Input context bus address: {input_bus_addr:#x?}");
+
+        // Try normal AddressDevice (BSR=0) first
         let result = self
             .root
             .post_cmd(command::Allowed::AddressDevice(
@@ -389,9 +391,28 @@ impl Device {
                     .set_slot_id(self.id.into())
                     .set_input_context_pointer(input_bus_addr),
             ))
-            .await?;
+            .await;
 
-        debug!("Address slot ok {result:?}");
+        // If we get ParameterError, try BSR=1 as a workaround for some controllers (RK3588)
+        match result {
+            Err(ref e) if format!("{:?}", e).contains("ParameterError") => {
+                warn!("AddressDevice BSR=0 failed with ParameterError, trying BSR=1 workaround");
+                let result_bsr1 = self
+                    .root
+                    .post_cmd(command::Allowed::AddressDevice(
+                        *command::AddressDevice::new()
+                            .set_slot_id(self.id.into())
+                            .set_input_context_pointer(input_bus_addr)
+                            .set_block_set_address_request(),  // BSR=1
+                    ))
+                    .await?;
+                debug!("Address slot ok with BSR=1: {result_bsr1:?}");
+            }
+            Ok(r) => {
+                debug!("Address slot ok with BSR=0: {r:?}");
+            }
+            Err(e) => return Err(e.into()),
+        }
 
         Ok(())
     }
