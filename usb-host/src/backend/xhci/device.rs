@@ -202,8 +202,9 @@ impl Device {
     pub(crate) async fn init(&mut self) -> Result<(), USBError> {
         trace!("Initializing device with ID: {}", self.id.as_u8());
         // Perform initialization logic here
+        self.dump_device_out();
         self.address().await?;
-        // self.dump_device_out();
+        self.dump_device_out();
         let max_packet_size = self.control_max_packet_size().await?;
 
         trace!("Max packet size: {max_packet_size}");
@@ -354,9 +355,14 @@ impl Device {
 
         // Debug: Log the context values after setting them
         self.ctx.with_input(|input| {
+            let control_ctx = input.control();
             let slot_context = input.device().slot();
             let endpoint_0 = input.device().endpoint(dci);
 
+            debug!("Control context - A0: {}, A1: {}",
+                control_ctx.add_context_flag(0),
+                control_ctx.add_context_flag(1)
+            );
             debug!("Slot context - port: {}, speed: {}, route_string: {}, context_entries: {}",
                 slot_context.root_hub_port_number(),
                 slot_context.speed(),
