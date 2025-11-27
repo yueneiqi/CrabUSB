@@ -693,6 +693,7 @@ impl Drop for MutexGuard<'_> {
 
 /// Callback function for polling events from the async runtime
 fn poll_events_callback(param: *mut ()) {
+    trace!("poll_events_callback: polling events");
     let root_ref = unsafe { &*(param as *const RootHub) };
     let inner = unsafe { root_ref.force_use() };
     inner.handle_event();

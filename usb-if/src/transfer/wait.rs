@@ -170,12 +170,14 @@ impl<T> Future for Waiter<'_, T> {
     ) -> core::task::Poll<Self::Output> {
         // Poll the event ring before checking results
         if let Some(poll_cb) = &self.poll_callback {
+            trace!("Waiter: calling poll callback");
             (poll_cb.poll)(poll_cb.param);
         }
 
         let elem = unsafe { &mut *self.as_ref().elem };
 
         if elem.result_ok.load(Ordering::Acquire) {
+            trace!("Waiter: result ready!");
             let result = elem
                 .result
                 .take()
@@ -186,6 +188,7 @@ impl<T> Future for Waiter<'_, T> {
             }
             return Poll::Ready(result);
         }
+        trace!("Waiter: result not ready, registering waker");
         elem.waker.register(cx.waker());
 
         Poll::Pending
